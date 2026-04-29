@@ -54,11 +54,6 @@ python -c "from sentence_transformers import SentenceTransformer; SentenceTransf
 python -c "from sentence_transformers import CrossEncoder; CrossEncoder('BAAI/bge-reranker-base')"
 ```
 
-也可设置镜像加速（PowerShell）：
-
-```powershell
-$env:HF_ENDPOINT = "https://hf-mirror.com"
-```
 
 ### 3. 运行
 
@@ -66,16 +61,6 @@ $env:HF_ENDPOINT = "https://hf-mirror.com"
 
 ```powershell
 python run.py
-```
-
-或分别启动：
-
-```powershell
-# 后端
-cd backend; python -m uvicorn app.main:app --reload --port 8000
-
-# 前端
-cd frontend; npm install; npm run dev
 ```
 
 - API 文档：`http://localhost:8000/docs`
@@ -90,20 +75,6 @@ docker compose up --build
 ## 工作流架构
 
 系统由 5 个 LangGraph Agent 构成，通过 Plan-Replan 闭环与独立事实核查机制协同工作：
-
-```
-用户消息 → MemoryAgent → QueryRewriterAgent → PlannerAgent
-                                                    │
-                                          ┌─────────┴──────────┐
-                                          │                    │
-                                     ResearchAgent        CriticAgent
-                                     (ReAct 循环)       (事实核查)
-                                          │                    │
-                                          └─────────┬──────────┘
-                                                    │
-                                              返回结果
-```
-
 - **MemoryAgent** — 加载短期对话历史与长期用户画像（SQLite 持久化）
 - **QueryRewriterAgent** — 意图识别（7 分类）、口语→术语规范化、生成扩展查询词
 - **PlannerAgent** — 初始路由决策（RAG / 工具 / LLM 直答）+ 执行结果评估，不满足时触发重规划
