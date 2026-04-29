@@ -42,6 +42,13 @@ backend/storage/
 backend/logs/
 frontend/dist/
 
+# Local assets & experiments
+demo*.png
+demo*.jpg
+fix_and_run.ps1
+notebook/
+*.bak
+
 # IDEs
 .vscode/
 .idea/

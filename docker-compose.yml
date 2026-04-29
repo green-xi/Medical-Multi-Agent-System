@@ -1,22 +1,31 @@
 services:
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     volumes:
-      - ./backend/database:/app/database
+      # 持久化 SQLite 数据库和 ChromaDB 向量库
+      - ./backend/storage:/app/storage
       - ./backend/logs:/app/logs
+      # 挂载 PDF 医学教材（可选）
+      - ./backend/data:/app/data
     environment:
       - PYTHONUNBUFFERED=1
-      - PDF_PATH=/app/database/medical_book.pdf
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+      - PDF_PATH=/app/data/medical_book.pdf
+    env_file:
+      - .env
     restart: always
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
     ports:
       - "80:80"
-    environment:
-      - VITE_API_URL=http://backend:8000
     depends_on:
       - backend
     restart: always

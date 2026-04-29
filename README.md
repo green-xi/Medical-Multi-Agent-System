@@ -26,9 +26,15 @@ Python 3.10+
 Node.js 18+
 ```
 
-编辑项目根目录下的 `.env` 文件，填入你的 API Key：
+复制 `.env.example` 为 `.env`，填入你的 API Key：
 
-> `.env` 已存在于项目中（含占位符值），直接编辑即可。该文件已被 `.gitignore` 排除，不会提交到 Git。
+> `.env` 已被 `.gitignore` 排除，不会提交到 Git。
+
+```powershell
+cp .env.example .env
+```
+
+然后编辑 `.env`，填入真实 Key：
 
 ```
 DASHSCOPE_API_KEY=your_dashscope_api_key_here
@@ -79,7 +85,7 @@ cd frontend; npm install; npm run dev
 ### Docker 部署
 
 ```powershell
-docker-compose up --build
+docker compose up --build
 ```
 
 ## 工作流架构
@@ -144,6 +150,7 @@ backend/
 │   └── ...
 ├── tests/                # pytest 测试套件
 ├── Dockerfile
+├── .dockerignore
 └── requirements.txt
 
 frontend/
@@ -151,6 +158,9 @@ frontend/
 │   ├── App.jsx
 │   ├── index.jsx
 │   └── index.css
+├── Dockerfile
+├── nginx.conf
+├── .dockerignore
 ├── package.json
 └── vite.config.js
 ```
@@ -175,7 +185,3 @@ python -m pytest tests/ --cov=app tests/
 cd frontend
 npm run test
 ```
-
-## License
-
-MIT
