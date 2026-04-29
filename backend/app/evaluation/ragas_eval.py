@@ -357,11 +357,6 @@ class RagasEvaluator:
         # ── 提取汇总得分（兼容 ragas v0.1 dict 与 v0.2+ EvaluationResult）────
         # ragas v0.2 起 evaluate() 返回 EvaluationResult 对象，没有 .items()，
         # 需通过 ._scores_dict / .scores / to_pandas() 等方式获取数值。
-        # 诊断结论（来自调试日志）：
-        #   - result._scores_dict 存在但为空 {}
-        #   - result.to_pandas() 有数据，float64 列即为指标得分
-        #   - 列名是 user_input / retrieved_contexts / response / reference + 指标名
-        #     不是 question / answer / contexts / ground_truth（旧命名），故需用 dtype 过滤
         scores: Dict[str, float] = {}
         if hasattr(result, "to_pandas"):
             # 最可靠路径：直接从 DataFrame 的数值列取列均值
@@ -398,9 +393,8 @@ class RagasEvaluator:
 
         return scores
 
-    # ── 私有：报告输出 ─────────────────────────────────────────────────────────
-
-    # ── 历史基线（每次跑完后手动或自动更新）───────────────────────────────────
+  
+    # ──历史基线（每次跑完后手动或自动更新）
     # 格式：{"日期": {"faithfulness": x, "answer_relevancy": x, ...}}
     # 用途：与当前得分对比，直观展示 Prompt 调优是否有效
     SCORE_HISTORY: List[Dict[str, Any]] = [
