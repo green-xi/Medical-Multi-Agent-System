@@ -28,7 +28,6 @@ Node.js 18+
 
 复制 `.env.example` 为 `.env`，填入你的 API Key：
 
-> `.env` 已被 `.gitignore` 排除，不会提交到 Git。
 
 ```powershell
 cp .env.example .env
