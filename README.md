@@ -72,6 +72,12 @@ python run.py
 docker compose up --build
 ```
 
+## 界面预览
+
+![demo1](demo1.png)
+
+![demo2](demo2.png)
+
 ## 工作流架构
 
 系统由 5 个 LangGraph Agent 构成，通过 Plan-Replan 闭环与独立事实核查机制协同工作：
