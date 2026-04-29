@@ -40,9 +40,15 @@ from typing import Any, Dict, List, Optional
 import httpx
 from langchain_core.documents import Document
 
+from app.core.config import MCP_ENABLED
 from app.core.logging_config import logger
 from app.core.state import AgentState, append_tool_trace, record_fallback, set_node_latency
 from app.tools.llm_client import get_llm
+from app.tools.mcp_client import (
+    MCP_AVAILABLE,
+    mcp_tavily_search,
+    mcp_wikipedia_search,
+)
 from app.tools.reranker import rerank_documents
 from app.tools.vector_store import get_retriever
 from app.tools.wikipedia_search import get_wikipedia_wrapper
@@ -315,14 +321,44 @@ def _run_explain_term(param: str) -> str:
 
 def _run_tool(tool_name: str, param: str) -> str:
     """
-    工具调用入口：使用本地硬编码实现。
+    工具调用入口：本地硬编码实现 + MCP 兜底。
+
+    执行顺序
+    --------
+    1. 优先使用本地实现（天气/药品/术语词典）
+    2. 本地未找到且 MCP 启用时，通过 MCP Tavily 联网检索兜底
     """
+    # ── 本地实现 ──
     if tool_name == "get_weather":
         return _run_get_weather(param)
     elif tool_name == "search_drug":
-        return _run_search_drug(param)
+        result = _run_search_drug(param)
+        if "未在数据库中找到" not in result or not MCP_ENABLED:
+            return result
+        # 本地无此药品信息，MCP 联网兜底
+        try:
+            tavily_results = mcp_tavily_search(query=f"{param} 药品 说明书 用法", max_results=2)
+            if tavily_results:
+                parts = [f"【{r['title']}】{r['content'][:500]}" for r in tavily_results]
+                return "（本地数据库未收录，以下为联网检索结果）\n\n" + "\n\n".join(parts)
+        except Exception as exc:
+            logger.debug("MCP 药品兜底检索失败：%s", exc)
+        return result
     elif tool_name == "explain_medical_term":
-        return _run_explain_term(param)
+        result = _run_explain_term(param)
+        if "未找到" not in result or not MCP_ENABLED:
+            return result
+        # 本地无此术语，MCP 联网兜底
+        try:
+            tavily_results = mcp_tavily_search(
+                query=f"{param} 医学术语 解释 临床意义", max_results=2
+            )
+            if tavily_results:
+                parts = [f"【{r['title']}】{r['content'][:500]}" for r in tavily_results]
+                return "（本地词库未收录，以下为联网检索结果）\n\n" + "\n\n".join(parts)
+        except Exception as exc:
+            logger.debug("MCP 术语兜底检索失败：%s", exc)
+        return result
     return f"工具 {tool_name} 未实现。"
 
 
@@ -877,44 +913,85 @@ def ResearchAgent(state: AgentState) -> AgentState:
                 record_fallback(state, f"research_unknown_tool:{tool_name}")
 
         elif action == "wikipedia":
-            wiki = get_wikipedia_wrapper()
-            if wiki:
+            # MCP Wikipedia 优先（内容更完整）
+            wiki_success = False
+            if MCP_ENABLED and MCP_AVAILABLE:
                 try:
-                    content = wiki.run(f"{param} 医学 症状 治疗")
-                    if content and len(content.strip()) > 100:
-                        docs.append(Document(page_content=content))
+                    mcp_results = mcp_wikipedia_search(param)
+                    if mcp_results:
+                        for r in mcp_results:
+                            existing_titles = {d.metadata.get("title", "") for d in docs}
+                            if r["title"] not in existing_titles:
+                                docs.append(Document(
+                                    page_content=r["content"],
+                                    metadata={"url": r.get("url", ""), "title": r["title"]},
+                                ))
                         state["wiki_success"] = True
                         state["source"] = "Wikipedia 医学资料"
-                        logger.info("ResearchAgent Wikipedia 检索成功")
-                    else:
-                        state["wiki_success"] = False
-                        record_fallback(state, f"research_wiki_empty_iter{iteration}")
+                        wiki_success = True
+                        logger.info("ResearchAgent MCP Wikipedia 成功，%d 条", len(mcp_results))
                 except Exception as exc:
-                    logger.error("Wikipedia 检索异常：%s", exc)
-                    record_fallback(state, f"research_wiki_exception:{exc}")
+                    logger.debug("MCP Wikipedia 降级到 langchain wrapper：%s", exc)
+            # 降级：langchain WikipediaAPIWrapper
+            if not wiki_success:
+                wiki = get_wikipedia_wrapper()
+                if wiki:
+                    try:
+                        content = wiki.run(f"{param} 医学 症状 治疗")
+                        if content and len(content.strip()) > 100:
+                            docs.append(Document(page_content=content))
+                            state["wiki_success"] = True
+                            state["source"] = "Wikipedia 医学资料"
+                            logger.info("ResearchAgent langchain Wikipedia 检索成功")
+                            wiki_success = True
+                        else:
+                            state["wiki_success"] = False
+                            record_fallback(state, f"research_wiki_empty_iter{iteration}")
+                    except Exception as exc:
+                        logger.error("Wikipedia 检索异常：%s", exc)
+                        record_fallback(state, f"research_wiki_exception:{exc}")
             state["wiki_attempted"] = True
 
         elif action == "tavily":
-            tavily = get_tavily_search()
-            if tavily:
+            # MCP Tavily 优先
+            tavily_success = False
+            if MCP_ENABLED and MCP_AVAILABLE:
                 try:
-                    results = tavily.invoke(f"{param}")
-                    valid = [r for r in (results or []) if isinstance(r, dict) and len(r.get("content", "")) > 50]
-                    if valid:
-                        for r in valid:
+                    mcp_results = mcp_tavily_search(param, max_results=3)
+                    if mcp_results:
+                        for r in mcp_results:
                             docs.append(Document(
                                 page_content=r["content"],
                                 metadata={"url": r.get("url", ""), "title": r.get("title", "")},
                             ))
                         state["tavily_success"] = True
                         state["source"] = "实时医学搜索"
-                        logger.info("ResearchAgent Tavily 检索成功，%d 条结果", len(valid))
-                    else:
-                        state["tavily_success"] = False
-                        record_fallback(state, f"research_tavily_empty_iter{iteration}")
+                        tavily_success = True
+                        logger.info("ResearchAgent MCP Tavily 成功，%d 条", len(mcp_results))
                 except Exception as exc:
-                    logger.error("Tavily 检索异常：%s", exc)
-                    record_fallback(state, f"research_tavily_exception:{exc}")
+                    logger.debug("MCP Tavily 降级到 langchain wrapper：%s", exc)
+            # 降级：langchain TavilySearchResults
+            if not tavily_success:
+                tavily = get_tavily_search()
+                if tavily:
+                    try:
+                        results = tavily.invoke(f"{param}")
+                        valid = [r for r in (results or []) if isinstance(r, dict) and len(r.get("content", "")) > 50]
+                        if valid:
+                            for r in valid:
+                                docs.append(Document(
+                                    page_content=r["content"],
+                                    metadata={"url": r.get("url", ""), "title": r.get("title", "")},
+                                ))
+                            state["tavily_success"] = True
+                            state["source"] = "实时医学搜索"
+                            logger.info("ResearchAgent langchain Tavily 成功，%d 条", len(valid))
+                        else:
+                            state["tavily_success"] = False
+                            record_fallback(state, f"research_tavily_empty_iter{iteration}")
+                    except Exception as exc:
+                        logger.error("Tavily 检索异常：%s", exc)
+                        record_fallback(state, f"research_tavily_exception:{exc}")
             state["tavily_attempted"] = True
 
         elif action == "llm_direct":

@@ -38,6 +38,11 @@ PDF_PATH = _env("PDF_PATH", os.path.join(_BACKEND_DIR, "data", "medical_book.pdf
 DASHSCOPE_API_KEY = _env("DASHSCOPE_API_KEY")
 TAVILY_API_KEY = _env("TAVILY_API_KEY")
 
+# ── MCP 配置 ────────────────────────────────────────────────────────────────────
+# MCP（Model Context Protocol）集成，用于 Wikipedia、Tavily、PubMed 等外部工具
+# 设为 false 可禁用 MCP，回退到 langchain 原生实现
+MCP_ENABLED = _env("MCP_ENABLED", "true").lower() == "true"
+
 # ── 嵌入模型配置 ────────────────────────────────────────────────────────────────
 # 始终使用本地 HuggingFace 模型，不支持 DashScope 云端嵌入。
 # EMBEDDING_MODEL: 指定 HuggingFace 模型名或本地路径，留空则自动探测

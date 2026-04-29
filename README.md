@@ -17,20 +17,18 @@
 
 ## 快速开始
 
+以下命令在 **PowerShell** 中执行。
+
 ### 1. 环境准备
 
-```bash
-# Python 3.10+
-# Node.js 18+
+```
+Python 3.10+
+Node.js 18+
 ```
 
-复制环境变量模板：
+编辑项目根目录下的 `.env` 文件，填入你的 API Key：
 
-```bash
-cp .env.example .env
-```
-
-填入你的 API Key：
+> `.env` 已存在于项目中（含占位符值），直接编辑即可。该文件已被 `.gitignore` 排除，不会提交到 Git。
 
 ```
 DASHSCOPE_API_KEY=your_dashscope_api_key_here
@@ -41,7 +39,7 @@ TAVILY_API_KEY=your_tavily_api_key_here
 
 项目使用本地嵌入模型，需先下载：
 
-```bash
+```powershell
 # 安装依赖
 cd backend
 pip install -r requirements.txt
@@ -51,28 +49,28 @@ python -c "from sentence_transformers import SentenceTransformer; SentenceTransf
 python -c "from sentence_transformers import CrossEncoder; CrossEncoder('BAAI/bge-reranker-base')"
 ```
 
-也可设置镜像加速：
+也可设置镜像加速（PowerShell）：
 
-```bash
-export HF_ENDPOINT=https://hf-mirror.com
+```powershell
+$env:HF_ENDPOINT = "https://hf-mirror.com"
 ```
 
 ### 3. 运行
 
 一键启动（后端 + 前端）：
 
-```bash
+```powershell
 python run.py
 ```
 
 或分别启动：
 
-```bash
+```powershell
 # 后端
-cd backend && python -m uvicorn app.main:app --reload --port 8000
+cd backend; python -m uvicorn app.main:app --reload --port 8000
 
 # 前端
-cd frontend && npm install && npm run dev
+cd frontend; npm install; npm run dev
 ```
 
 - API 文档：`http://localhost:8000/docs`
@@ -80,7 +78,7 @@ cd frontend && npm install && npm run dev
 
 ### Docker 部署
 
-```bash
+```powershell
 docker-compose up --build
 ```
 
@@ -166,10 +164,11 @@ frontend/
 | `EMBEDDING_MODEL` | 本地嵌入模型路径 | 否（自动探测） |
 | `RERANKER_MODEL` | 本地 Reranker 路径 | 否（自动探测） |
 | `RERANKER_TOP_K` | 精排后文档数（默认 5） | 否 |
+| `MCP_ENABLED` | 启用 MCP 外部工具（true/false，默认 true） | 否 |
 
 ## 测试
 
-```bash
+```powershell
 cd backend
 python -m pytest tests/ --cov=app tests/
 
