@@ -1,0 +1,28 @@
+services:
+  # Backend API service
+  - type: web
+    name: medicalai-api
+    runtime: docker
+    dockerContext: ./backend
+    dockerfile: Dockerfile
+    plan: free
+    envVars:
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: PDF_PATH
+        value: data/medical_book.pdf
+      - key: PYTHONPATH
+        value: /app
+
+  # Frontend static service
+  - type: static
+    name: medicalai-web
+    runtime: node
+    buildCommand: cd frontend && npm install && npm run build
+    publishPath: ./frontend/dist
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          name: medicalai-api
+          type: web
+          property: host

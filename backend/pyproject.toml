@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "medicalai-backend"
+version = "3.0.0"
+description = "AI-powered medical assistant backend"
+authors = [
+    {name = "Md. Hasan Imon", email = "codix@example.com"},
+]
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi==0.128.0",
+    "uvicorn[standard]==0.40.0",
+    "python-multipart==0.0.21",
+    "pydantic==2.12.5",
+    "pydantic-settings==2.12.0",
+    "itsdangerous==2.2.0",
+    "huggingface-hub==0.36.0",
+    "langchain-core==1.2.6",
+    "langchain-community==0.4.1",
+    "langchain-groq==1.1.1",
+    "langchain_huggingface==1.2.0",
+    "langgraph==1.0.5",
+    "sentence-transformers==5.2.0",
+    "chromadb==1.4.0",
+    "langchain-chroma==1.1.0",
+    "torch==2.9.1",
+    "tensorflow==2.15.0",
+    "transformers==4.57.3",
+    "sqlalchemy==2.0.45",
+    "pypdf==6.5.0",
+    "wikipedia==1.4.0",
+    "duckduckgo-search==8.1.1",
+    "python-dotenv==1.2.1",
+    "aiofiles==25.1.0",
+    "httpx==0.28.1",
+    "ragas>=0.1.0",
+    "datasets>=2.14.0",
+    "tiktoken==0.12.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.0.2",
+    "black==26.1.0",
+    "isort==7.0.0",
+    "flake8==7.3.0",
+    "pytest-cov==7.0.0",
+    "pytest-asyncio==1.3.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+addopts = "-v --cov=app"
+
+[tool.black]
+line-length = 88
+target-version = ['py310']
+
+[tool.isort]
+profile = "black"
