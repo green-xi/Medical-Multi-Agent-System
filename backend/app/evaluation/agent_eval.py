@@ -21,10 +21,7 @@ def _compat_import(module_path: str):
     兼容两种运行方式的动态导入：
       - 从 backend/ 目录运行：python -m app.evaluation.agent_eval
       - 从项目根目录运行：python -m backend.app.evaluation.agent_eval
-
-    根本问题：从项目根目录运行时，sys.path 只有项目根，
-    没有 backend/ 目录，导致所有 app.xxx 导入失败。
-    解决方案：导入前把 backend/ 的绝对路径注入 sys.path（幂等）。
+      - 导入前把 backend/ 的绝对路径注入 sys.path（幂等）。
     """
     import importlib
     import sys
