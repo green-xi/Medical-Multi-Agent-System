@@ -1,7 +1,4 @@
-"""
-MedicalAI — tools/pdf_loader.py
-PDF 文档加载与文本分块工具。
-"""
+"""PDF 文档加载与医疗文本分块。"""
 
 from typing import List
 

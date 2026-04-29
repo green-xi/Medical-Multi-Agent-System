@@ -1,15 +1,4 @@
-"""
-MedicalAI — db/migrate.py
-轻量级数据库迁移工具（无需 Alembic）。
-
-执行时机：
-  - 应用启动时由 main.py 的 lifespan 自动调用
-  - 也可手动运行：python -m app.db.migrate
-
-迁移内容：
-  v1 → v2：为 user_memory 表的 (session_id, memory_type, key) 添加 UNIQUE 约束，
-           修复 ON CONFLICT DO UPDATE 失败的问题（原来只有普通 Index 不够）。
-"""
+"""轻量级数据库迁移（无需 Alembic），v1→v2：user_memory 添加 UNIQUE 约束。"""
 
 import sqlite3
 import os

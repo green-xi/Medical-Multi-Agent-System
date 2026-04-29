@@ -1,21 +1,4 @@
-"""
-MedicalAI — evaluation/ragas_eval.py
-基于 Ragas 的 RAG 质量评估模块。
-
-评估维度（四项核心指标）：
-  - faithfulness          忠实度：回答是否完全基于检索到的上下文
-  - answer_relevancy      回答相关性：回答是否切中用户问题
-  - context_precision     上下文精确率：检索内容与问题的相关比例
-  - context_recall        上下文召回率：答案所需信息是否被检索覆盖
-
-使用方式：
-  python -m backend.app.evaluation.ragas_eval              # 使用内置样例数据集运行
-  python -m app.evaluation.ragas_eval --export     # 同时输出 CSV 报告
-  python -m backend.app.evaluation.agent_eval --mode agent --mock
-依赖：
-  pip install ragas datasets langchain-openai
-  （或在 requirements.txt 中添加 ragas>=0.1.0）
-"""
+"""基于 Ragas 的 RAG 质量评估（faithfulness / relevancy / precision / recall）。"""
 
 from __future__ import annotations
 
@@ -183,12 +166,6 @@ class RagasEvaluator:
     支持两种 LLM 后端：
       - DashScope / 通义千问（默认，与项目主体一致）
       - OpenAI（通过 OPENAI_API_KEY 环境变量启用）
-
-    参数
-    ----
-    use_openai : bool
-        True 时使用 OpenAI gpt-4o 作为评估裁判；
-        False（默认）时使用 DashScope qwen-max。
     """
 
     def __init__(self, use_openai: bool = False):
@@ -226,13 +203,7 @@ class RagasEvaluator:
         return self._llm
 
     def _build_embeddings(self):
-        """
-        构建 Ragas 评估所用的 Embeddings 模型（仅使用本地 HuggingFace 模型）。
-
-        优先级：
-          1. 环境变量 EMBEDDING_MODEL 指定的本地路径（与主工程一致，优先使用）
-          2. 降级：sentence-transformers/all-MiniLM-L6-v2
-        """
+        """构建 Ragas 评估所用的 Embeddings 模型（本地 HuggingFace 模型）。"""
         if self._embeddings is not None:
             return self._embeddings
 
@@ -270,14 +241,7 @@ class RagasEvaluator:
     def build_dataset(
         self, samples: Optional[List[Dict[str, Any]]] = None
     ):
-        """
-        将样本列表转换为 Ragas 所需的 HuggingFace Dataset 格式。
-
-        参数
-        ----
-        samples : 列表，每项包含 question / answer / contexts / ground_truth。
-                  默认使用内置 SAMPLE_DATASET。
-        """
+        """将样本列表转换为 Ragas 所需的 HuggingFace Dataset 格式。"""
         try:
             from datasets import Dataset
         except ImportError:
@@ -302,19 +266,7 @@ class RagasEvaluator:
         export_csv: bool = False,
         output_dir: Optional[str] = None,
     ) -> Dict[str, float]:
-        """
-        执行 Ragas 评估并返回各指标得分。
-
-        参数
-        ----
-        samples    : 自定义评估样本；None 时使用内置样例。
-        export_csv : True 时将结果写入 CSV 文件。
-        output_dir : CSV 输出目录；None 时写入 backend/evaluation_reports/。
-
-        返回
-        ----
-        dict，键为指标名称，值为 0~1 之间的浮点数。
-        """
+        """执行 Ragas 评估并返回各指标得分。"""
         try:
             from ragas import evaluate
         except ImportError:
@@ -476,12 +428,7 @@ class RagasEvaluator:
 
     @classmethod
     def _print_report(cls, scores: Dict[str, float]) -> None:
-        """
-        在终端打印格式化的评估报告，包含：
-          1. 四项 Ragas 指标及进度条
-          2. 安全性维度（幻觉风险、超范围推断评估）
-          3. 与历史基线的 Δ 对比（判断 Prompt 调优效果）
-        """
+        """在终端打印格式化的评估报告（指标 + 安全性诊断 + 历史对比）。"""
         label_map = {
             "faithfulness":       "忠实度       (Faithfulness)",
             "answer_relevancy":   "回答相关性   (Answer Relevancy)",
@@ -492,7 +439,7 @@ class RagasEvaluator:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         print("\n" + "=" * 62)
-        print("  MedicalAI — Ragas RAG 质量评估报告")
+        print("  Ragas RAG 质量评估报告")
         print(f"  评估时间：{now_str}")
         print("=" * 62)
 
@@ -617,13 +564,7 @@ class RagasEvaluator:
 # ── FastAPI 端点集成（可选） ────────────────────────────────────────────────────
 
 def create_eval_router():
-    """
-    创建 FastAPI 评估路由（可选挂载到主应用）。
-
-    挂载方式（在 main.py 中）：
-        from app.evaluation.ragas_eval import create_eval_router
-        app.include_router(create_eval_router(), prefix="/api/v1")
-    """
+    """创建 FastAPI 评估路由（可选挂载到主应用）。"""
     try:
         from fastapi import APIRouter, BackgroundTasks, HTTPException
         from pydantic import BaseModel
@@ -686,7 +627,7 @@ def create_eval_router():
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="MedicalAI — Ragas RAG 质量评估工具",
+        description="Ragas RAG 质量评估工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例：

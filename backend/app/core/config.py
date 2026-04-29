@@ -1,7 +1,4 @@
-"""
-MedicalAI — core/config.py
-集中管理环境变量与路径配置。
-"""
+"""环境变量与路径配置。"""
 
 import os
 
@@ -26,33 +23,16 @@ def _env_int(key: str, default: int) -> int:
 _BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 LOG_DIR = _env("LOG_DIR", os.path.join(_BACKEND_DIR, "logs"))
-CHAT_DB_PATH = _env(
-    "CHAT_DB_PATH",
-    os.path.join(_BACKEND_DIR, "storage", "chat_db", "medicalai.db"),
-)
-VECTOR_STORE_DIR = _env(
-    "VECTOR_STORE_DIR", os.path.join(_BACKEND_DIR, "storage", "vector_store")
-)
+CHAT_DB_PATH = _env("CHAT_DB_PATH", os.path.join(_BACKEND_DIR, "storage", "chat_db", "medicalai.db"))
+VECTOR_STORE_DIR = _env("VECTOR_STORE_DIR", os.path.join(_BACKEND_DIR, "storage", "vector_store"))
 PDF_PATH = _env("PDF_PATH", os.path.join(_BACKEND_DIR, "data", "medical_book.pdf"))
 
 DASHSCOPE_API_KEY = _env("DASHSCOPE_API_KEY")
 TAVILY_API_KEY = _env("TAVILY_API_KEY")
 
-# ── MCP 配置 ────────────────────────────────────────────────────────────────────
-# MCP（Model Context Protocol）集成，用于 Wikipedia、Tavily、PubMed 等外部工具
-# 设为 false 可禁用 MCP，回退到 langchain 原生实现
 MCP_ENABLED = _env("MCP_ENABLED", "true").lower() == "true"
 
-# ── 嵌入模型配置 ────────────────────────────────────────────────────────────────
-# 始终使用本地 HuggingFace 模型，不支持 DashScope 云端嵌入。
-# EMBEDDING_MODEL: 指定 HuggingFace 模型名或本地路径，留空则自动探测
 EMBEDDING_MODEL = _env("EMBEDDING_MODEL", "")
-
-# Reranker 配置（本地 CrossEncoder）
-# RERANKER_MODEL 取值：
-#   "BAAI/bge-reranker-base"    → 强制使用本地模型
-#   "none" / "disabled"         → 完全禁用 Reranker
-#   留空                        → 自动探测本地模型
 RERANKER_MODEL = _env("RERANKER_MODEL", "")
 RERANKER_TOP_K = _env_int("RERANKER_TOP_K", 5)
 

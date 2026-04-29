@@ -1,15 +1,6 @@
-/**
- * MedicalAI — 前端主应用
- * 含短期+长期记忆面板
- */
-
 import { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import './index.css';
-
-// ══════════════════════════════════════════════════════════════
-// SECTION 1 — 工具函数
-// ══════════════════════════════════════════════════════════════
 
 function formatTimeAgo(timestamp) {
   const now = new Date(); const past = new Date(timestamp);
@@ -27,9 +18,9 @@ function getChineseTime() {
   return new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 function buildDownloadText(chatHistory) {
-  let c = 'MedicalAI — 对话记录\n' + '='.repeat(40) + '\n导出时间：' + new Date().toLocaleString('zh-CN') + '\n\n';
+  let c = '对话记录\n' + '='.repeat(40) + '\n导出时间：' + new Date().toLocaleString('zh-CN') + '\n\n';
   chatHistory.forEach(m => {
-    c += '[' + m.timestamp + '] ' + (m.type === 'user' ? '我' : 'MedicalAI') + '：\n' + m.content + '\n';
+    c += '[' + m.timestamp + '] ' + (m.type === 'user' ? '我' : 'AI') + '：\n' + m.content + '\n';
     if (m.source) c += '来源：' + m.source + '\n';
     c += '\n';
   });

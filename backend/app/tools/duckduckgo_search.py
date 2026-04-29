@@ -1,9 +1,4 @@
-"""
-MedicalAI — tools/duckduckgo_search.py
-DuckDuckGo 搜索工具 — 免 API Key 的 Tavily 备选方案（备用，暂未启用）。
-
-激活方式：pip install duckduckgo-search langchain-community
-"""
+"""DuckDuckGo 搜索（免 API Key 的 Tavily 备选，暂未启用）。"""
 
 from app.core.logging_config import logger
 

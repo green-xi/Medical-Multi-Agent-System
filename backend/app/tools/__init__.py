@@ -1,7 +1,4 @@
-"""
-MedicalAI — tools/__init__.py
-统一导出所有工具模块的获取函数。
-"""
+"""工具模块导出。"""
 
 from app.tools.duckduckgo_search import get_duckduckgo_search
 from app.tools.llm_client import get_llm

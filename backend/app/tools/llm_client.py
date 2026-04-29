@@ -1,7 +1,4 @@
-"""
-MedicalAI — tools/llm_client.py
-通义千问 / Qwen LLM 客户端单例（基于 DashScope）。
-"""
+"""通义千问 LLM 客户端单例（DashScope）。"""
 
 from app.core.config import DASHSCOPE_API_KEY
 from app.core.logging_config import logger
@@ -10,7 +7,6 @@ _llm_instance = None
 
 
 def get_llm():
-    """返回缓存的 LLM 客户端实例；环境未配置时返回 None。"""
     global _llm_instance
 
     if _llm_instance is not None:
@@ -22,7 +18,7 @@ def get_llm():
 
     try:
         from langchain_community.chat_models.tongyi import ChatTongyi
-    except Exception as exc:  # pragma: no cover
+    except Exception as exc:
         logger.error("导入 ChatTongyi 失败：%s", exc)
         return None
 

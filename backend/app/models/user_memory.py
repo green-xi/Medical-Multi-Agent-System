@@ -1,11 +1,4 @@
-"""
-MedicalAI — models/user_memory.py
-SQLAlchemy ORM 模型：用户长期记忆持久化。
-
-长期记忆存储两类信息：
-  - user_profile  用户画像：年龄、既往病史、过敏史、用药情况等
-  - medical_fact  医疗事实：LLM 从对话中自动提取的关键医学信息
-"""
+"""用户长期记忆 ORM 模型（user_profile / medical_fact）。"""
 
 from datetime import datetime
 from typing import Dict

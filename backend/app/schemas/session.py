@@ -1,7 +1,4 @@
-"""
-MedicalAI — schemas/session.py
-Pydantic schemas for session and message responses.
-"""
+"""会话与消息响应 schema。"""
 
 from typing import Optional
 

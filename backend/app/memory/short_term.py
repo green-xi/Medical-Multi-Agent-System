@@ -1,13 +1,4 @@
-"""
-MedicalAI — memory/short_term.py
-短期记忆管理器：维护当前会话的滑动对话窗口。
-
-设计原则：
-  - 保留最近 N 轮完整对话（默认 10 轮 = 20 条消息）
-  - 超出窗口的早期内容由 LLM 压缩为一条摘要注入系统消息
-  - 摘要本身也纳入 Token 预算估算，防止上下文溢出
-  - 无 LLM 可用时直接截断，不阻塞流程
-"""
+"""短期滑动对话窗口，超出窗口的早期内容由 LLM 压缩为摘要。"""
 
 from __future__ import annotations
 
@@ -18,10 +9,8 @@ from typing import List, Optional
 from app.core.logging_config import logger
 from app.core.state import ChatTurn
 
-# 短期窗口保留的最近轮数（一轮 = user + assistant 各一条）
 SHORT_TERM_WINDOW = 10
-# 触发压缩的历史条数阈值
-COMPRESS_THRESHOLD = SHORT_TERM_WINDOW * 2  # 20 条
+COMPRESS_THRESHOLD = SHORT_TERM_WINDOW * 2
 
 
 def _rough_token_count(text: str) -> int:
@@ -35,15 +24,7 @@ def compress_history(
     history: List[ChatTurn],
     llm=None,
 ) -> List[ChatTurn]:
-    """
-    压缩超出短期窗口的历史记录。
-
-    流程：
-      1. 取出窗口之外的早期对话 old_turns
-      2. 若 LLM 可用，调用其生成 3 句摘要
-      3. 将摘要作为 system 消息插到最前，保留最近 N 轮详细对话
-      4. LLM 不可用时直接丢弃早期对话（硬截断）
-    """
+    """压缩超出短期窗口的历史记录为摘要。"""
     if len(history) <= COMPRESS_THRESHOLD:
         return history
 
@@ -116,13 +97,7 @@ def _summarize_with_llm(turns: List[ChatTurn], llm=None) -> Optional[str]:
 
 
 def build_context_window(history: List[ChatTurn], max_tokens: int = 3000) -> List[ChatTurn]:
-    """
-    在 Token 预算内从历史中选取最有价值的上下文。
-
-    策略：
-      - system 摘要始终保留（高价值）
-      - 从最近一轮开始往前取，直到接近 Token 上限
-    """
+    """在 Token 预算内从历史中选取最有价值的上下文。"""
     system_turns = [t for t in history if t.get("role") == "system"]
     dialogue_turns = [t for t in history if t.get("role") != "system"]
 

@@ -1,7 +1,4 @@
-"""
-MedicalAI — api/v1/endpoints/chat.py
-对话相关端点：/chat、/chat/stream（SSE 流式思考进度）、/clear、/new-chat。
-"""
+"""对话相关端点：/chat、/chat/stream、/clear、/new-chat。"""
 
 import asyncio
 import json

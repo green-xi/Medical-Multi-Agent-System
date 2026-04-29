@@ -1,7 +1,4 @@
-"""
-MedicalAI — api/v1/api.py
-路由聚合器：将所有 v1 端点路由统一注册。
-"""
+"""v1 路由聚合器。"""
 
 from fastapi import APIRouter
 

@@ -1,7 +1,4 @@
-"""
-MedicalAI — api/v1/endpoints/memory.py
-长期记忆管理端点：查询、手动更新、清除用户画像与医疗事实。
-"""
+"""长期记忆管理端点。"""
 
 import uuid
 from typing import Optional

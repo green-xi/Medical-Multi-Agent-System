@@ -1,46 +1,4 @@
-"""
-MedicalAI — agents/critic.py
-CriticAgent：独立事实核查 + 幻觉检测 + 风格润色。
-
-核心设计
---------
-解决 Multi-Agent 系统中的幻觉传播（hallucination propagation）问题：
-当多个 Agent 共享推理链时，上游 Agent 的错误会被下游 Agent 当作事实继续推理，
-形成"自我验证"偏差，错误被放大。
-
-四个关键机制
------------
-  1. 隔离上下文
-     使用独立的 LLM 调用，不传入 ResearchAgent 的推理过程，
-     仅接受原始参考文档 + 最终生成答案，从"旁观者"角度评估。
-
-  2. PubMed 独立事实核查（与 ResearchAgent 数据源完全隔离）
-     从答案中提取核心医学断言 → LLM 转换为英文 PubMed 检索词 →
-     通过 MCP PubMed 独立获取权威文献摘要 → 以此作为 Critic 的参考文档。
-     这套文献来源与 ResearchAgent 使用的 RAG 向量库和 Tavily 完全不同，
-     实现了真正意义上的第三方独立验证。
-     PubMed 不可用时自动降级为原有 RAG 文档核查逻辑。
-
-  3. 逐条事实核查
-     将答案拆解为独立的医学事实断言，对每一条与参考文档进行比对，
-     分类为：verified / unverifiable / contradicted。
-
-  4. 幻觉检测
-     识别答案中出现但不来源于任何参考文档的具体数据/药名/剂量，
-     区分"合理推断（通用医学常识）"与"无依据捏造"。
-
-重试机制（已修复）
------------------
-原实现：CRITIC_MAX_RETRY=1 配合 retry_count >= 1 的判断，
-导致第二次进入 Critic 时直接跳过核查强制放行。
-根因：把"已失败次数"和"最大执行次数"的边界混淆了。
-
-修复方案：改用 critic_attempt_count 记录"已执行核查次数"，
-进入函数后先递增计数再判断是否超限，语义清晰无歧义：
-  - attempt_count = 1：首次进入，执行第 1 次核查
-  - attempt_count = 2：核查失败重入，执行第 2 次核查（对重检索后的新答案）
-  - attempt_count > MAX_CRITIC_ATTEMPTS：超出上限，强制放行
-"""
+"""CriticAgent：独立事实核查 + 幻觉检测 + 风格润色。"""
 
 import json
 import re
@@ -65,33 +23,13 @@ from app.tools.mcp_client import (
     mcp_pubmed_search,
 )
 
-# ── 常量配置 ──────────────────────────────────────────────────────────────────
-MAX_CRITIC_ATTEMPTS = 2   # 最多执行几次真实核查（超出则强制放行）
-MIN_ANSWER_LENGTH   = 20  # 少于此长度的答案直接视为不合格
-PUBMED_MAX_RESULTS  = 3   # PubMed 每条查询词最多返回文献数
-MIN_PUBMED_DOCS     = 2   # PubMed 检索结果低于此数时降级为 RAG 文档核查
-                          # 文献过少时强行比对会导致 hallucination 误判（CC-005 根因）
+MAX_CRITIC_ATTEMPTS = 2
+MIN_ANSWER_LENGTH   = 20
+PUBMED_MAX_RESULTS  = 3
+MIN_PUBMED_DOCS     = 2
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PubMed 独立文献检索（与 ResearchAgent 数据源完全隔离）
-# ══════════════════════════════════════════════════════════════════════════════
 
 def _extract_pubmed_queries(question: str, answer: str, llm) -> List[str]:
-    """
-    用 LLM 从问答对中提取 1-2 个核心医学断言，并转为适合 PubMed 检索的英文关键词。
-
-    为什么需要这一步
-    ----------------
-    - 用户问题和 AI 回答通常是中文，PubMed 以英文文献为主
-    - 直接把中文问题丢给 PubMed 检索效果极差
-    - 需要聚焦于"答案中最核心、最需要被权威文献验证的断言"
-      而不是把整个问题都检索一遍
-
-    降级
-    ----
-    LLM 调用失败时直接截取问题前 60 字作为查询词（效果差但保证可用）
-    """
     prompt = (
         "你是一名医学文献检索专家。请从以下医疗问答中提取 1-2 个核心医学断言，"
         "转换为适合 PubMed 数据库检索的英文关键词（每条不超过 8 个词）。\n"
@@ -120,18 +58,6 @@ def _extract_pubmed_queries(question: str, answer: str, llm) -> List[str]:
 
 
 def _broaden_pubmed_query(query: str, llm) -> Optional[str]:
-    """
-    将过于精确的 PubMed 查询词放宽为更通用的关键词。
-
-    用途
-    ----
-    当精确查询词命中 0 篇文献时调用，尝试去掉具体数值、剂量、修饰词，
-    保留核心医学概念。例如：
-      "fever 38C antipyretic use guidelines" → "fever antipyretic adults"
-      "ibuprofen 800mg maximum dose adults"  → "ibuprofen dosage adults"
-
-    失败时返回 None，由调用方保持原查询词不变。
-    """
     prompt = (
         "请将以下 PubMed 检索词放宽为更通用的版本（去掉具体数值/修饰词，保留核心医学概念）。"
         "只返回一个英文检索词，不超过 6 个词，不加任何解释。\n\n"
@@ -141,7 +67,6 @@ def _broaden_pubmed_query(query: str, llm) -> Optional[str]:
         response = llm.invoke(prompt, config={"timeout": 8})
         text = response.content if hasattr(response, "content") else str(response)
         broad = text.strip().strip('"').strip("'")
-        # 简单校验：不为空、不含中文、比原词短或词数更少
         if broad and broad != query and len(broad) < len(query) + 10:
             return broad
     except Exception as exc:
@@ -150,18 +75,6 @@ def _broaden_pubmed_query(query: str, llm) -> Optional[str]:
 
 
 def _fetch_pubmed_context(question: str, answer: str, llm) -> Optional[str]:
-    """
-    通过 MCP PubMed 独立检索权威医学文献，构建供 Critic 使用的参考上下文。
-
-    返回值
-    ------
-    str  : 格式化后的 PubMed 文献摘要（注入 fact-check prompt 替换 RAG 文档）
-    None : PubMed 不可用 / 检索失败 / 无结果时返回 None，降级为 RAG 文档核查
-
-    独立性保证
-    ----------
-    检索结果不写入 state["documents"]，与 ResearchAgent 的向量库和 Tavily 完全隔离。
-    """
     if not MCP_AVAILABLE or "pubmed" not in MCP_SERVER_CONFIGS:
         logger.debug("PubMed MCP 未启用（MCP_PUBMED_ENABLED=false），降级为 RAG 文档核查")
         return None
@@ -177,25 +90,14 @@ def _fetch_pubmed_context(question: str, answer: str, llm) -> Optional[str]:
             results = mcp_pubmed_search(query=query, max_results=PUBMED_MAX_RESULTS)
             hit_count = len(results)
 
-            # ── 修复 CC-005：第一条检索词命中 0 篇时自动放宽重试 ────────────
-            # 原因：精确查询词（如 "fever 38C antipyretic use guidelines"）在 PubMed
-            # 中可能无法匹配，应拆解为更宽泛的关键词再试一次，而不是直接进入备用词。
             if hit_count == 0 and llm:
                 broad_query = _broaden_pubmed_query(query, llm)
                 if broad_query and broad_query != query:
-                    logger.info(
-                        "CriticAgent PubMed [%s] 命中 0 篇，尝试放宽查询：[%s]",
-                        query, broad_query,
-                    )
+                    logger.info("CriticAgent PubMed [%s] 命中 0 篇，尝试放宽查询：[%s]", query, broad_query)
                     try:
-                        results = mcp_pubmed_search(
-                            query=broad_query, max_results=PUBMED_MAX_RESULTS
-                        )
+                        results = mcp_pubmed_search(query=broad_query, max_results=PUBMED_MAX_RESULTS)
                         hit_count = len(results)
-                        logger.info(
-                            "CriticAgent PubMed 放宽查询 [%s]：%d 篇文献",
-                            broad_query, hit_count,
-                        )
+                        logger.info("CriticAgent PubMed 放宽查询 [%s]：%d 篇文献", broad_query, hit_count)
                     except Exception as exc2:
                         logger.warning("CriticAgent PubMed 放宽查询失败：%s", exc2)
 
@@ -212,8 +114,6 @@ def _fetch_pubmed_context(question: str, answer: str, llm) -> Optional[str]:
         logger.warning("CriticAgent PubMed 未返回任何文献，降级为 RAG 文档核查")
         return None
 
-    # ── 修复 CC-005：文献数量不足时降级，避免稀疏文献引发误判 ────────────────
-    # 仅凭 1-2 篇不相关文献核查会把答案中的合理临床数值误判为幻觉（CC-005 根因）
     if len(all_results) < MIN_PUBMED_DOCS:
         logger.warning(
             "CriticAgent PubMed 文献数 %d < MIN_PUBMED_DOCS=%d，降级为 RAG 文档核查",
@@ -239,12 +139,7 @@ def _fetch_pubmed_context(question: str, answer: str, llm) -> Optional[str]:
     return context
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 事实核查核心逻辑
-# ══════════════════════════════════════════════════════════════════════════════
-
 def _build_rag_doc_context(docs: List[Document]) -> str:
-    """将 RAG 检索文档拼接为降级参考上下文。"""
     if not docs:
         return "（无检索文档，答案来自模型内部知识）"
     parts = [f"[RAG-{i+1}] {doc.page_content[:400]}" for i, doc in enumerate(docs[:5])]
@@ -258,15 +153,6 @@ def _llm_fact_check(
     ref_source: str,
     llm,
 ) -> "CriticResult | None":
-    """
-    调用 LLM 进行事实核查。
-
-    ref_source 决定 prompt 中对参考来源的说明措辞，影响 LLM 的核查严格程度：
-      - "pubmed" : 权威文献，严格比对
-      - "rag"    : 本地知识库，中等严格
-      - "tool"   : 工具查询结果，结构化数据视为可信
-      - "empty"  : 无文档，倾向于通过
-    """
     has_tool_doc = "[工具:" in ref_context
 
     if ref_source == "pubmed":
@@ -389,13 +275,10 @@ def _llm_fact_check(
 
 
 def _heuristic_check(answer: str, docs: List[Document]) -> CriticResult:
-    """LLM 不可用时的启发式降级核查（规则层兜底）。"""
     if not answer or len(answer.strip()) < MIN_ANSWER_LENGTH:
         return {
-            "passed": False,
-            "hallucination_detected": False,
-            "fact_checks": [],
-            "revised_answer": "",
+            "passed": False, "hallucination_detected": False,
+            "fact_checks": [], "revised_answer": "",
             "feedback": "回答内容过短或为空，需要重新生成。",
         }
 
@@ -407,8 +290,7 @@ def _heuristic_check(answer: str, docs: List[Document]) -> CriticResult:
 
     if issues:
         return {
-            "passed": False,
-            "hallucination_detected": True,
+            "passed": False, "hallucination_detected": True,
             "fact_checks": [
                 {"claim": issue, "status": "contradicted", "note": "启发式检测到风险模式"}
                 for issue in issues
@@ -420,52 +302,25 @@ def _heuristic_check(answer: str, docs: List[Document]) -> CriticResult:
     disclaimer = "\n\n⚠️ 以上信息仅供参考，不构成医疗诊断，如有疑虑请咨询专业医生。"
     revised = answer if answer.endswith("就医。") else answer + disclaimer
     return {
-        "passed": True,
-        "hallucination_detected": False,
+        "passed": True, "hallucination_detected": False,
         "fact_checks": [{"claim": "整体内容", "status": "unverifiable", "note": "LLM 不可用，启发式通过"}],
-        "revised_answer": revised,
-        "feedback": "",
+        "revised_answer": revised, "feedback": "",
     }
 
 
 def _force_pass_with_disclaimer(answer: str) -> CriticResult:
-    """超出核查上限时强制通过，添加显式免责声明，保证系统可终止性。"""
     disclaimer = (
         "\n\n⚠️ 本回答基于医学知识库及通用医学资料生成，部分内容未能与权威来源逐一核对，"
         "请以专业医生的判断为准，切勿自行诊断或用药。"
     )
     return {
-        "passed": True,
-        "hallucination_detected": False,
+        "passed": True, "hallucination_detected": False,
         "fact_checks": [{"claim": "（超出核查次数上限，强制放行）", "status": "unverifiable", "note": "已添加免责声明"}],
-        "revised_answer": answer.rstrip() + disclaimer,
-        "feedback": "",
+        "revised_answer": answer.rstrip() + disclaimer, "feedback": "",
     }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# CriticAgent 主函数
-# ══════════════════════════════════════════════════════════════════════════════
-
 def CriticAgent(state: AgentState) -> AgentState:
-    """
-    独立事实核查节点。
-
-    执行顺序
-    --------
-    1. 递增 critic_attempt_count，判断是否超出核查上限
-    2. 尝试通过 MCP PubMed 获取独立权威文献（与 RAG 来源隔离）
-    3. PubMed 不可用时降级为 RAG 文档核查
-    4. 执行 LLM 事实核查，降级到启发式规则
-    5. 通过 → 更新 generation 为润色版本
-    6. 不通过 → 写入 replan_instruction 触发重检索
-
-    关键状态字段
-    ------------
-    读取：generation, documents, original_question, critic_attempt_count
-    写入：critic_result, generation（通过时）, critic_attempt_count,
-          critic_ref_source, replan_instruction（不通过时）
-    """
     start_time = perf_counter()
     append_tool_trace(state, "critic")
 
@@ -473,18 +328,14 @@ def CriticAgent(state: AgentState) -> AgentState:
     docs     = state.get("documents", [])
     question = state.get("original_question") or state.get("question", "")
 
-    # ── 修复 retry 计数语义：进入时先递增，再判断是否超限 ─────────────────
     attempt_count = state.get("critic_attempt_count", 0) + 1
     state["critic_attempt_count"] = attempt_count
 
-    # ── 答案为空：标记不通过，回退计数（不消耗一次有效核查机会） ──────────
     if not answer or len(answer.strip()) < MIN_ANSWER_LENGTH:
         state["critic_attempt_count"] = attempt_count - 1
         result: CriticResult = {
-            "passed": False,
-            "hallucination_detected": False,
-            "fact_checks": [],
-            "revised_answer": "",
+            "passed": False, "hallucination_detected": False,
+            "fact_checks": [], "revised_answer": "",
             "feedback": "答案为空或过短，需要重新检索生成。",
         }
         state["critic_result"] = result
@@ -493,7 +344,6 @@ def CriticAgent(state: AgentState) -> AgentState:
         logger.warning("CriticAgent：答案为空，标记不通过（不消耗 attempt）")
         return state
 
-    # ── 超出核查次数上限：强制通过 ────────────────────────────────────────
     if attempt_count > MAX_CRITIC_ATTEMPTS:
         result = _force_pass_with_disclaimer(answer)
         state["critic_result"] = result
@@ -507,40 +357,29 @@ def CriticAgent(state: AgentState) -> AgentState:
         )
         return state
 
-    # ── 正常核查流程 ───────────────────────────────────────────────────────
     llm = get_llm()
 
-    # Step 1：优先尝试 PubMed 独立文献（与 RAG 来源隔离，实现第三方验证）
     pubmed_context: Optional[str] = None
     if llm:
         pubmed_context = _fetch_pubmed_context(question, answer, llm)
 
-    # Step 2：确定本次核查使用的参考来源
     if pubmed_context:
         ref_context = pubmed_context
         ref_source  = "pubmed"
-        logger.info(
-            "CriticAgent 第 %d 次核查：使用 PubMed 独立文献（%d 字符）",
-            attempt_count, len(pubmed_context),
-        )
+        logger.info("CriticAgent 第 %d 次核查：使用 PubMed 独立文献（%d 字符）", attempt_count, len(pubmed_context))
     else:
         ref_context = _build_rag_doc_context(docs)
         ref_source  = "rag" if docs else "empty"
-        logger.info(
-            "CriticAgent 第 %d 次核查：PubMed 不可用，降级为 %s（文档数=%d）",
-            attempt_count, ref_source, len(docs),
-        )
+        logger.info("CriticAgent 第 %d 次核查：PubMed 不可用，降级为 %s（文档数=%d）", attempt_count, ref_source, len(docs))
 
     state["critic_ref_source"] = ref_source
 
-    # Step 3：执行 LLM 核查，失败则降级到启发式
     result = None
     if llm:
         result = _llm_fact_check(question, answer, ref_context, ref_source, llm)
     if result is None:
         result = _heuristic_check(answer, docs)
 
-    # Step 4：写回 state
     state["critic_result"] = result
     state["metrics"]["critic_pass"]          = result["passed"]
     state["metrics"]["critic_attempt_count"] = attempt_count
@@ -550,9 +389,7 @@ def CriticAgent(state: AgentState) -> AgentState:
         state["generation"] = result["revised_answer"]
         logger.info(
             "CriticAgent ✓ 第 %d 次核查通过（来源=%s，幻觉=%s，矛盾数=%d）",
-            attempt_count,
-            ref_source,
-            result["hallucination_detected"],
+            attempt_count, ref_source, result["hallucination_detected"],
             sum(1 for fc in result["fact_checks"] if fc["status"] == "contradicted"),
         )
     else:
@@ -561,15 +398,11 @@ def CriticAgent(state: AgentState) -> AgentState:
             "请重新检索并修正上述问题后重新生成答案。"
         )
         state["planner_eval"] = {
-            "satisfied":     False,
-            "reason":        f"CriticAgent 核查不通过：{result['feedback'][:80]}",
+            "satisfied": False, "reason": f"CriticAgent 核查不通过：{result['feedback'][:80]}",
             "replan_action": result["feedback"],
-            "replan_count":  state.get("planner_eval" or {}).get("replan_count", 0),
+            "replan_count": state.get("planner_eval" or {}).get("replan_count", 0),
         }
-        record_fallback(
-            state,
-            f"critic_failed_attempt{attempt_count}:{result['feedback'][:60]}",
-        )
+        record_fallback(state, f"critic_failed_attempt{attempt_count}:{result['feedback'][:60]}")
         logger.warning(
             "CriticAgent ✗ 第 %d 次核查不通过（来源=%s，幻觉=%s），触发重检索",
             attempt_count, ref_source, result["hallucination_detected"],

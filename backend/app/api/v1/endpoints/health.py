@@ -1,10 +1,6 @@
-"""
-MedicalAI — api/v1/endpoints/health.py
-健康检查与轻量指标端点。
-"""
+"""健康检查端点。"""
 
 from fastapi import APIRouter
-
 from app.services.chat_service import chat_service
 
 router = APIRouter(tags=["健康检查"])

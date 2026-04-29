@@ -1,35 +1,4 @@
-"""
-MedicalAI — evaluation/agent_eval.py
-Agent 编排行为评估 + CriticAgent 单元评估。
-
-覆盖维度
---------
-  1. AgentBehaviorEvaluator  ：端到端黑盒评估
-     - 工作流路径是否符合预期（节点序列）
-     - QueryRewriter 意图识别准确率
-     - RAG 命中率 / Tavily 触发率
-     - 重规划率（replan_count）
-     - 答案安全红线检测（forbidden_patterns）
-     - 关键词覆盖率（required_keywords）
-     - 响应延迟分布
-
-  2. CriticUnitEvaluator     ：CriticAgent 单元评估
-     - 对已知正确答案的通过率（True Positive）
-     - 对已知错误答案的拦截率（True Negative）
-     - 幻觉检测准确率
-     - 参考来源分布（pubmed / rag / empty）
-
-使用方式
---------
-  # 仅运行 Agent 编排评估（不调用实际 API，用 mock）
-  python -m app.evaluation.agent_eval --mode agent --mock
-
-  # 运行 Critic 单元评估（需要真实 LLM）
-  python -m app.evaluation.agent_eval --mode critic
-
-  # 运行全部
-  python -m app.evaluation.agent_eval --mode all --export
-"""
+"""Agent 编排行为评估 + CriticAgent 单元评估。"""
 
 from __future__ import annotations
 
@@ -344,7 +313,7 @@ class AgentBehaviorEvaluator:
     def _print_report(summary: Dict[str, Any]) -> None:
         """打印 Agent 行为评估报告。"""
         print("\n" + "=" * 65)
-        print("  MedicalAI — Agent 编排行为评估报告")
+        print("  Agent 编排行为评估报告")
         print(f"  评估时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print("=" * 65)
         print(f"  用例总数：{summary['total']}　通过：{summary['passed']}　通过率：{summary['pass_rate']:.1%}")
@@ -539,7 +508,7 @@ class CriticUnitEvaluator:
     def _print_report(summary: Dict[str, Any]) -> None:
         """打印 CriticAgent 单元评估报告。"""
         print("\n" + "=" * 65)
-        print("  MedicalAI — CriticAgent 单元评估报告")
+        print("  CriticAgent 单元评估报告")
         print(f"  评估时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print("=" * 65)
         print(f"  用例总数：{summary['total']}")
@@ -569,7 +538,7 @@ class CriticUnitEvaluator:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="MedicalAI — Agent 行为 & CriticAgent 单元评估工具",
+        description="Agent 行为 & CriticAgent 单元评估工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例：

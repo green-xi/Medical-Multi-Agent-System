@@ -1,14 +1,4 @@
-"""
-MedicalAI — core/state.py
-工作流状态类型定义与辅助函数。
-
-架构说明（五 Agent 精简版）：
-  MemoryAgent      → 短/长期记忆加载
-  QueryRewriterAgent → 意图理解 + 查询扩展
-  PlannerAgent     → Plan-Replan 闭环（接收下游结果后判断是否满足意图）
-  ResearchAgent    → RAG + 工具链的 ReAct 自适应检索（含 Wikipedia/Tavily 内化工具）
-  CriticAgent      → 独立事实核查 + 幻觉检测 + 风格润色
-"""
+"""工作流状态类型定义与辅助函数。"""
 
 from typing import Any, Dict, List, Literal, Optional, TypedDict
 

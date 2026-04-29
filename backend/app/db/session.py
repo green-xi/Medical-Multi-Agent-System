@@ -1,7 +1,4 @@
-"""
-MedicalAI — db/session.py
-SQLAlchemy 引擎与会话工厂。
-"""
+"""SQLAlchemy 引擎与会话工厂。"""
 
 import os
 

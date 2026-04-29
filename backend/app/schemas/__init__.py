@@ -1,7 +1,4 @@
-"""
-MedicalAI — schemas/__init__.py
-Exports all Pydantic schemas.
-"""
+"""导出各 Pydantic schema。"""
 
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.schemas.session import MessageResponse, SessionResponse

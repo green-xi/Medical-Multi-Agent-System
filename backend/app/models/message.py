@@ -1,7 +1,4 @@
-"""
-MedicalAI — models/message.py
-SQLAlchemy ORM 模型：聊天消息持久化。
-"""
+"""聊天消息 ORM 模型。"""
 
 from datetime import datetime
 from typing import Dict

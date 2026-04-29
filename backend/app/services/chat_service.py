@@ -1,7 +1,4 @@
-"""
-MedicalAI — services/chat_service.py
-ChatService：工作流编排、会话生命周期管理与可观测性指标收集。
-"""
+"""会话管理与工作流编排。"""
 
 from collections import OrderedDict
 from datetime import datetime
@@ -81,8 +78,6 @@ class ChatService:
             self._touch_session(session_id, state)
             return state
 
-        # ── 内存中没有该 session（首次加载或后端重启后）──────────────────────
-        # 从数据库恢复对话历史，确保重启后上下文不丢失
         state = initialize_conversation_state(session_id=session_id)
         try:
             db_rows = db_service.get_chat_history(session_id)
@@ -162,7 +157,6 @@ class ChatService:
             state = self._get_or_create_session_state(session_id)
             state = reset_query_state(state)
             state["question"] = message
-            # 确保 session_id 在 state 中始终正确
             state["session_id"] = session_id
 
             try:
@@ -205,7 +199,6 @@ class ChatService:
             }
 
     def clear_conversation(self, session_id: str) -> None:
-        """清空内存对话状态（保留长期记忆）。"""
         if session_id in self.conversation_states:
             self._touch_session(session_id, initialize_conversation_state(session_id=session_id))
             logger.info("已清空会话 %s 的对话历史（长期记忆保留）", session_id[:8])

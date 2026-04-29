@@ -1,7 +1,4 @@
-"""
-MedicalAI — schemas/chat.py
-Pydantic schemas for chat request and response.
-"""
+"""对话请求与响应 schema。"""
 
 from pydantic import BaseModel
 

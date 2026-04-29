@@ -1,7 +1,4 @@
-"""
-MedicalAI — services/database_service.py
-DatabaseService：聊天历史与长期记忆的全部 CRUD 操作。
-"""
+"""聊天历史与长期记忆的 CRUD 操作。"""
 
 from typing import Dict, List, Optional
 

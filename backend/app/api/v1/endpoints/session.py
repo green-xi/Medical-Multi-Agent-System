@@ -1,7 +1,4 @@
-"""
-MedicalAI — api/v1/endpoints/session.py
-会话管理端点：/history、/sessions、/session/{id}。
-"""
+"""会话管理端点。"""
 
 import uuid
 

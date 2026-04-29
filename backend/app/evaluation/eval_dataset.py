@@ -1,14 +1,4 @@
-"""
-MedicalAI — evaluation/eval_dataset.py
-统一评估数据集定义。
-
-包含三类测试用例：
-  1. RAG_SAMPLES        ：RAG 检索质量评估（供 Ragas 使用）
-  2. AGENT_CASES        ：Agent 编排行为评估（黑盒端到端）
-  3. CRITIC_CASES       ：CriticAgent 独立单元评估
-
-所有测试用例均基于医疗场景设计，覆盖常见问诊、用药、急症、慢病管理等领域。
-"""
+"""统一评估数据集（RAG_SAMPLES / AGENT_CASES / CRITIC_CASES）。"""
 
 from typing import Any, Dict, List
 

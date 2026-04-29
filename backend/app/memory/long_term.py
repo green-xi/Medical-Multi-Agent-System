@@ -1,33 +1,4 @@
-"""
-MedicalAI — memory/long_term.py
-长期记忆管理器：跨会话持久化用户医疗画像与关键事实。
-
-架构：
-  ┌─────────────────────────────────────────────────┐
-  │              长期记忆（SQLite 持久化）             │
-  │                                                 │
-  │  user_profile   用户画像                         │
-  │    ├─ age          年龄                          │
-  │    ├─ allergies    过敏史                         │
-  │    ├─ conditions   既往病史                       │
-  │    └─ medications  当前用药                       │
-  │                                                 │
-  │  medical_fact   本次对话提取的医疗事实              │
-  │    ├─ chief_complaint  主诉                      │
-  │    ├─ symptoms         症状列表                   │
-  │    ├─ diagnosis        诊断建议                   │
-  │    └─ advice           医嘱                      │
-  │                                                 │
-  │  preference     用户偏好                          │
-  │    └─ language_style  回答风格偏好                │
-  └─────────────────────────────────────────────────┘
-
-核心流程：
-  1. extract()   — 每轮对话结束后，LLM 从 Q&A 中提取关键医疗信息
-  2. load()      — 每轮对话开始前，加载该用户的长期记忆上下文
-  3. upsert()    — 写入或更新单条记忆（相同 key 则覆盖）
-  4. format_for_prompt() — 将长期记忆格式化为 LLM 可直接注入的文本块
-"""
+"""跨会话持久化用户医疗画像与关键事实（user_profile / medical_fact）。"""
 
 from __future__ import annotations
 
@@ -82,9 +53,7 @@ FIELD_IMPORTANCE: Dict[str, int] = {
 
 class LongTermMemoryService:
     """
-    长期记忆服务。
-
-    依赖 SQLAlchemy Session，通过 DatabaseService 的连接池工作。
+    LongTermMemoryService（依赖 SQLAlchemy Session，通过 DatabaseService 连接池工作）。
     """
 
     def __init__(self, session_factory=None):
@@ -107,9 +76,7 @@ class LongTermMemoryService:
         importance: int = 5,
         source_turn: Optional[int] = None,
     ) -> None:
-        """
-        写入或更新一条长期记忆（相同 session_id + memory_type + key 则覆盖）。
-        """
+        """写入或更新一条长期记忆（相同 session_id + memory_type + key 则覆盖）。"""
         if not value or value.strip() in ("", "无", "不确定", "未知", "N/A"):
             return  # 无效值不写入
 
@@ -164,12 +131,6 @@ class LongTermMemoryService:
     ) -> List[Dict]:
         """
         加载指定用户的长期记忆条目。
-
-        参数
-        ----
-        session_id    : 用户标识
-        memory_types  : 过滤类型列表；None 则加载全部
-        min_importance: 最低重要性阈值（过滤噪音）
         """
         from app.models.user_memory import UserMemory
 
@@ -229,8 +190,6 @@ class LongTermMemoryService:
     ) -> Dict[str, str]:
         """
         从一轮 Q&A 中提取医疗信息并写入长期记忆。
-
-        返回提取到的字段字典（用于调试/日志）。
         """
         extracted = self._extract_with_llm(question, answer, llm)
         if not extracted:
@@ -318,14 +277,6 @@ class LongTermMemoryService:
     def format_for_prompt(self, session_id: str) -> str:
         """
         将长期记忆格式化为可直接注入 LLM 提示词的文本块。
-
-        示例输出：
-          【患者档案】
-          · 年龄：45岁　· 性别：男　· 过敏史：青霉素过敏
-          · 既往病史：高血压（已服药）　· 当前用药：氨氯地平 5mg/日
-          【近期就诊记录】
-          · 主诉：反复头痛 3 天　· 主要症状：头痛、颈部僵硬
-          · 诊断建议：排除颈椎病，建议影像学检查
         """
         all_memories = self.load(session_id)
         if not all_memories:

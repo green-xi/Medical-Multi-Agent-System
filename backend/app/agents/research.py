@@ -1,36 +1,4 @@
-"""
-MedicalAI — agents/research.py
-ResearchAgent：自适应检索 Agent，整合 RAG、工具查询、Wikipedia、Tavily 为内部工具集。
-
-核心设计
---------
-原架构中 WikipediaAgent / TavilyAgent / ToolAgent 是独立的"伪 Agent"（无推理决策）。
-本模块将它们全部内化为 ResearchAgent 持有的工具，由 ResearchAgent 自主决定调用时机，
-体现真正的 ReAct 自主决策能力：
-
-  ┌──────────────────────────────────────────────────────┐
-  │  THINK   分析当前信息缺口，决定下一步行动              │
-  │  ACT     执行：RAG检索 / 工具查询 / Wikipedia / Tavily │
-  │  OBSERVE 观察结果质量，更新内部状态                    │
-  │  REPEAT  最多 MAX_ITER 轮，直到质量达标或耗尽策略       │
-  └──────────────────────────────────────────────────────┘
-
-支持的 ACT 动作
---------------
-  rag_search       向量库检索（带 Reranker 精排）
-  tool_query       结构化工具（天气/药品/术语）
-  expand_query     扩展查询词后重检索
-  decompose        拆解复杂问题为子查询分别检索
-  wikipedia        Wikipedia 医学知识兜底
-  tavily           Tavily 实时联网搜索（最终兜底）
-  llm_direct       直接 LLM 推理（无需外部文档）
-  accept           当前文档质量足够，退出循环生成答案
-
-Replan 支持
------------
-当 state["replan_instruction"] 非空时，ResearchAgent 将其注入 THINK 阶段的 prompt，
-确保重规划时的执行方向符合 Planner 的修订意见。
-"""
+"""ResearchAgent：ReAct 循环检索 Agent，整合 RAG、工具查询、Wikipedia、Tavily。"""
 
 import json
 import re
@@ -54,14 +22,9 @@ from app.tools.vector_store import get_retriever
 from app.tools.wikipedia_search import get_wikipedia_wrapper
 from app.tools.tavily_search import get_tavily_search
 
-MAX_ITER = 3  # ReAct 最大迭代轮数
+MAX_ITER = 3
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 内化工具实现
-# ══════════════════════════════════════════════════════════════════════════════
-
-# ── 工具注册表（供 LLM THINK 阶段参考） ───────────────────────────────────────
 TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
     "get_weather": {
         "description": "根据城市名查询当前天气，用于判断气象性头痛、过敏、关节痛等是否与天气相关。",
@@ -163,13 +126,6 @@ MEDICAL_TERMS = {
 
 
 def _run_get_weather(param: str) -> str:
-    """
-    查询城市天气，支持当前天气和明天预报。
-
-    两个 API 源（自动切换）：
-      1. Open-Meteo（主，免费，全球）：国内网络可能被阻断
-      2. wttr.in（备，免费，文本友好）：国内多数网络可访问，JSON 格式
-    """
     import json as _json
 
     coords = None
@@ -188,13 +144,12 @@ def _run_get_weather(param: str) -> str:
                 r = data["results"][0]
                 coords = {"lat": r["latitude"], "lon": r["longitude"]}
                 city = r.get("name", param)
-        except Exception as e:
-            pass  # 不返回错误，继续尝试 wttr.in 兜底
+        except Exception:
+            pass
 
-    # ── 源1：Open-Meteo API ────────────────────────────────────────────────
     if coords:
         try:
-            forecast_days = 3  # 始终返回当前+明天预报，用户经常问"明天天气如何"
+            forecast_days = 3
             url = (
                 f"https://api.open-meteo.com/v1/forecast"
                 f"?latitude={coords['lat']}&longitude={coords['lon']}"
@@ -204,11 +159,8 @@ def _run_get_weather(param: str) -> str:
             )
             resp = httpx.get(url, timeout=8.0)
             data = resp.json()
-
             wmo = {0:"晴天",1:"基本晴朗",2:"部分多云",3:"阴天",61:"小雨",63:"中雨",65:"大雨",71:"小雪",95:"雷暴"}
             parts = []
-
-            # 当前天气
             current = data.get("current", {})
             if current:
                 temp = current.get("temperature_2m", "N/A")
@@ -218,16 +170,15 @@ def _run_get_weather(param: str) -> str:
                 wcode = wmo.get(current.get("weather_code", 0), "未知")
                 parts.append(f"当前：{wcode}，{temp}°C（体感{feels}°C），湿度{humidity}%，风速{wind}km/h")
 
-            # 明天预报（forecast_days=3 时 data 含 daily 数据）
             daily = data.get("daily", {})
             if daily and daily.get("time") and len(daily["time"]) > 1:
-                    tomorrow = daily["time"][1]
-                    tmax = daily.get("temperature_2m_max", ["N/A"])[1]
-                    tmin = daily.get("temperature_2m_min", ["N/A"])[1]
-                    rain_pct = daily.get("precipitation_probability_mean", [None])[1]
-                    twmo = wmo.get(daily.get("weather_code", [0])[1], "未知")
-                    rain_str = f"，降水概率{rain_pct}%" if rain_pct is not None else ""
-                    parts.append(f"明天({tomorrow})：{twmo}，最高{tmax}°C/最低{tmin}°C{rain_str}")
+                tomorrow = daily["time"][1]
+                tmax = daily.get("temperature_2m_max", ["N/A"])[1]
+                tmin = daily.get("temperature_2m_min", ["N/A"])[1]
+                rain_pct = daily.get("precipitation_probability_mean", [None])[1]
+                twmo = wmo.get(daily.get("weather_code", [0])[1], "未知")
+                rain_str = f"，降水概率{rain_pct}%" if rain_pct is not None else ""
+                parts.append(f"明天({tomorrow})：{twmo}，最高{tmax}°C/最低{tmin}°C{rain_str}")
 
             if parts:
                 result = f"【{city}天气】" + " | ".join(parts) + "。"
@@ -244,13 +195,11 @@ def _run_get_weather(param: str) -> str:
         except Exception as e:
             logger.debug("Open-Meteo 查询失败，尝试 wttr.in 兜底：%s", e)
 
-    # ── 源2：wttr.in 兜底（国内多数网络可访问） ──────────────────────────
     try:
         city_name = city or param
         wttr_url = f"https://wttr.in/{city_name}?format=j1&lang=zh"
         resp = httpx.get(wttr_url, timeout=8.0)
         wdata = resp.json()
-
         cc = wdata.get("current_condition", [{}])[0]
         temp = cc.get("temp_C", "N/A")
         feels = cc.get("FeelsLikeC", "N/A")
@@ -259,7 +208,6 @@ def _run_get_weather(param: str) -> str:
         wind = cc.get("windspeedKmph", "N/A")
         result = f"【{city_name}天气】当前：{desc}，{temp}°C（体感{feels}°C），湿度{humidity}%，风速{wind}km/h。"
 
-        # 始终包含明天预报（用户常问"明天天气"）
         forecasts = wdata.get("weather", [])
         if len(forecasts) >= 2:
             tmrw = forecasts[1]
@@ -277,8 +225,7 @@ def _run_get_weather(param: str) -> str:
         if tips:
             result += " 健康提示：" + "；".join(tips) + "。"
         return result
-    except Exception as e:
-        # 网络完全不可用时，给出该城市季节性气候参考
+    except Exception:
         city_name = city or param
         season_hint = ""
         try:
@@ -320,22 +267,12 @@ def _run_explain_term(param: str) -> str:
 
 
 def _run_tool(tool_name: str, param: str) -> str:
-    """
-    工具调用入口：本地硬编码实现 + MCP 兜底。
-
-    执行顺序
-    --------
-    1. 优先使用本地实现（天气/药品/术语词典）
-    2. 本地未找到且 MCP 启用时，通过 MCP Tavily 联网检索兜底
-    """
-    # ── 本地实现 ──
     if tool_name == "get_weather":
         return _run_get_weather(param)
     elif tool_name == "search_drug":
         result = _run_search_drug(param)
         if "未在数据库中找到" not in result or not MCP_ENABLED:
             return result
-        # 本地无此药品信息，MCP 联网兜底
         try:
             tavily_results = mcp_tavily_search(query=f"{param} 药品 说明书 用法", max_results=2)
             if tavily_results:
@@ -348,11 +285,8 @@ def _run_tool(tool_name: str, param: str) -> str:
         result = _run_explain_term(param)
         if "未找到" not in result or not MCP_ENABLED:
             return result
-        # 本地无此术语，MCP 联网兜底
         try:
-            tavily_results = mcp_tavily_search(
-                query=f"{param} 医学术语 解释 临床意义", max_results=2
-            )
+            tavily_results = mcp_tavily_search(query=f"{param} 医学术语 解释 临床意义", max_results=2)
             if tavily_results:
                 parts = [f"【{r['title']}】{r['content'][:500]}" for r in tavily_results]
                 return "（本地词库未收录，以下为联网检索结果）\n\n" + "\n\n".join(parts)
@@ -362,32 +296,11 @@ def _run_tool(tool_name: str, param: str) -> str:
     return f"工具 {tool_name} 未实现。"
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# RAG 检索（带 Reranker）
-# ══════════════════════════════════════════════════════════════════════════════
-
 def _rag_search(query: str, state: AgentState, skip_coverage_check: bool = False) -> List[Document]:
-    """
-    RAG 检索（带 Reranker + 知识库盲区检测）。
-
-    盲区检测逻辑
-    ------------
-    首次检索（state 里还没有任何文档）时，先做 3 篇快速召回 + rerank 评分。
-    如果 top_score < 0.15，说明知识库完全没有相关内容（盲区），
-    直接返回空列表 + 在 state 里写入盲区标记，让 THINK 阶段感知并路由到 tavily。
-
-    相比原来无脑 expand_query 三轮的好处
-    -------------------------------------
-    - 维生素C预防新冠这类问题：原来3轮都在 expand_query，耗时 ~90s 才触发 tavily
-    - 改造后：第一轮 _rag_search 检测到盲区（score=0.098<0.15），
-      立即标记 rag_blind_spot=True，THINK 下一轮直接选 tavily，节省 ~60s
-    """
     retriever = get_retriever()
     if not retriever:
         return []
 
-    # ── 知识库盲区快速检测 ────────────────────────────────────────────────
-    # 仅在首次 RAG 检索时触发（state 里还没有文档）
     if not skip_coverage_check and not state.get("documents"):
         try:
             from app.tools.vector_store import check_coverage
@@ -397,13 +310,11 @@ def _rag_search(query: str, state: AgentState, skip_coverage_check: bool = False
                     "ResearchAgent 知识库盲区：%s（top_score=%.3f）",
                     coverage["suggestion"], coverage["top_score"],
                 )
-                # 写入盲区标记，THINK 阶段 prompt 里会感知并路由到 tavily
                 state["rag_blind_spot"] = True
                 state["rag_blind_score"] = coverage["top_score"]
-                return []   # 提前返回空，不做无效的完整召回
+                return []
         except Exception as exc:
             logger.debug("盲区检测失败（忽略）：%s", exc)
-    # ─────────────────────────────────────────────────────────────────────
 
     try:
         docs = retriever.invoke(query)
@@ -421,10 +332,6 @@ def _rag_search(query: str, state: AgentState, skip_coverage_check: bool = False
         logger.warning("Reranker 异常，使用原始结果：%s", exc)
         return valid_docs
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# THINK 阶段：LLM 分析当前信息质量，决定下一步 ACT
-# ══════════════════════════════════════════════════════════════════════════════
 
 _ACT_CHOICES = ["rag_search", "tool_query", "expand_query", "decompose",
                 "wikipedia", "tavily", "llm_direct", "accept"]
@@ -445,10 +352,6 @@ def _think(
     rag_blind_spot: bool = False,
     rag_blind_score: float = 0.0,
 ) -> Dict:
-    """
-    THINK 阶段：LLM 以独立视角分析当前文档质量，决定下一步行动。
-    prev_scores 传入上一轮的评分，帮助模型感知质量变化趋势，避免无效重复迭代。
-    """
     doc_summary = ""
     if docs:
         snippets = [f"[Doc{i+1}] {d.page_content[:200]}" for i, d in enumerate(docs[:3])]
@@ -458,7 +361,6 @@ def _think(
 
     replan_hint = f"\n\n【Planner 重规划指令】：{replan_instruction}" if replan_instruction else ""
 
-    # 盲区感知：告诉 THINK 知识库没有相关内容，避免再次 expand_query
     blind_spot_hint = ""
     if rag_blind_spot:
         blind_spot_hint = (
@@ -467,7 +369,6 @@ def _think(
         )
     used_str = "、".join(used_actions) if used_actions else "无"
 
-    # 上轮评分提示：帮助模型判断是否已经足够好，避免重复无效扩展
     prev_score_hint = ""
     if prev_scores and iteration > 0:
         prev_score_hint = (
@@ -477,35 +378,21 @@ def _think(
             "如果本轮文档在此基础上有改善且三项均≥6，请直接选择 accept，不要继续扩展。"
         )
 
-    # ── 硬性 early-exit：rerank_score ≥ 0.80 直接 accept，跳过 THINK LLM 调用 ──
-    # 这是最重要的优化：Reranker 打分是客观信号，比 LLM 自评更可靠且无额外延迟。
-    # top 分 ≥ 0.80 时文档已高度相关，继续 THINK 只是浪费 3-4s 的 LLM 调用。
     top_rerank_score = 0.0
-    # 当 docs 为空时，_think 应直接返回 action=expand_query，不打分
     if not docs:
         return {
-            "scores": None,   # 明确为 None，前端可据此显示"暂无文档"
+            "scores": None,
             "reasoning": "当前无文档，执行检索扩展",
             "action": "expand_query",
             "param": question,
             "reason": "当前无文档，需扩展查询",
         }
-    
+
     if docs:
         scores = [d.metadata.get("rerank_score", 0.0) for d in docs]
         top_rerank_score = max(scores) if scores else 0.0
 
-    # ── 动态 early-exit 阈值 ─────────────────────────────────────────────────
-    # 0.80 是经验值，但 bge-reranker-base 的分数分布不是线性的：
-    #   0.90+ : 极高相关（文档几乎就是问题答案）→ 无条件 accept
-    #   0.80-0.90 : 高度相关，但需要确认不是第0轮（首轮只有expand_query，无基础文档）
-    #   0.70-0.80 : 中等相关，仅在已有多个文档时才 accept（避免信息不足）
-    # 首轮（iteration=0）：expand_query 后得到的是第一批文档，阈值适当提高
-    # 非首轮：已经历一轮迭代，阈值可以低一点（避免无效重复）
     EARLY_ACCEPT_THRESHOLD = 0.85 if iteration == 0 else 0.80
-
-    # 额外条件：急症类问题（含"急""立即""马上""怎么办"等）降低阈值
-    # 理由：急症场景宁可用次优文档快速回答，也不要拖延检索
     _URGENT_KEYWORDS = ["急", "立即", "马上", "怎么办", "救", "危险", "紧急"]
     if any(kw in question for kw in _URGENT_KEYWORDS):
         EARLY_ACCEPT_THRESHOLD = min(EARLY_ACCEPT_THRESHOLD, 0.75)
@@ -524,7 +411,6 @@ def _think(
             "THINK [iter=%d] early-exit: rerank_score=%.3f ≥ %.2f，跳过 LLM 直接 accept",
             iteration, top_rerank_score, EARLY_ACCEPT_THRESHOLD,
         )
-        # 写入 early-exit 日志供阈值验证分析使用
         logger.debug(
             "EARLY_EXIT_LOG | question=%s | iter=%d | rerank_score=%.3f | threshold=%.2f",
             question[:50], iteration, top_rerank_score, EARLY_ACCEPT_THRESHOLD,
@@ -590,7 +476,6 @@ def _think(
     except Exception as exc:
         logger.warning("THINK 阶段 LLM 失败：%s", exc)
 
-    # 降级：无文档则检索，有文档则接受
     return {
         "relevance": 5.0, "coverage": 5.0, "medical_depth": 5.0,
         "action": "rag_search" if not docs else "accept",
@@ -598,10 +483,6 @@ def _think(
         "reason": "LLM 不可用，使用启发式策略。",
     }
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 最终答案生成
-# ══════════════════════════════════════════════════════════════════════════════
 
 def _generate_answer(
     question: str,
@@ -611,7 +492,6 @@ def _generate_answer(
     long_term_prefix: str,
     llm,
 ) -> tuple[str, str]:
-    """生成最终答案，返回 (answer, source)。"""
     if not llm:
         if docs:
             snippets = "；".join(d.page_content[:180] for d in docs[:2])
@@ -701,15 +581,7 @@ def _generate_answer(
     return "当前服务暂时不可用，如有明显不适请线下就医。", "系统提示"
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ResearchAgent 主函数
-# ══════════════════════════════════════════════════════════════════════════════
-
 def ResearchAgent(state: AgentState) -> AgentState:
-    """
-    自适应检索 Agent。
-    通过 THINK-ACT-OBSERVE 循环，自主决定使用哪些工具完成检索任务。
-    """
     start_time = perf_counter()
     append_tool_trace(state, "research")
 
@@ -718,7 +590,6 @@ def ResearchAgent(state: AgentState) -> AgentState:
     replan_instruction = state.get("replan_instruction", "")
     route_tool = state.get("current_tool", "retriever")
 
-    # 构建历史上下文
     turns = state.get("context_window") or state.get("conversation_history", [])
     history_context = ""
     for item in turns[-5:]:
@@ -734,13 +605,11 @@ def ResearchAgent(state: AgentState) -> AgentState:
     if lt:
         long_term_prefix = f"以下是该患者的历史档案，请参考：\n{lt}\n\n"
 
-    # ── 初始化本轮状态 ─────────────────────────────────────────────────────
     docs: List[Document] = list(state.get("documents") or [])
     tool_result: str = ""
     used_actions: List[str] = []
     think_log: List[Dict] = list(state.get("rag_think_log") or [])
 
-    # ── 如果 Planner 路由到 llm_agent，直接跳过检索 ───────────────────────
     if route_tool == "llm_agent" and not replan_instruction:
         answer, source = _generate_answer(
             question, [], "", history_context, long_term_prefix, llm
@@ -755,10 +624,8 @@ def ResearchAgent(state: AgentState) -> AgentState:
         logger.info("ResearchAgent [llm_direct] 路径完成")
         return state
 
-    # ── ReAct 主循环 ───────────────────────────────────────────────────────
-    prev_scores: Optional[Dict] = None  # 上一轮评分，传给 THINK 避免无效重复
+    prev_scores: Optional[Dict] = None
     for iteration in range(MAX_ITER):
-        # 最后一轮强制 accept（避免跑满后再发起无效检索）
         if iteration == MAX_ITER - 1 and docs:
             think_result = {
                 "relevance": 7.0, "coverage": 7.0, "medical_depth": 7.0,
@@ -769,19 +636,12 @@ def ResearchAgent(state: AgentState) -> AgentState:
             logger.info("ResearchAgent THINK [iter=%d] 强制 accept（已达 MAX_ITER）", iteration)
             break
 
-        # ── 盲区强制路由：不依赖 LLM 决策，直接跳到最优工具 ──────────────
-        # 原设计靠 blind_spot_hint 提示 LLM 选 tavily，但 LLM 倾向于按
-        # 既有模式（无文档→expand_query）走，soft prompt 无效。
-        # 改为：检测盲区类型，智能选择工具：
-        #   天气相关 → get_weather（拿到实时气象数据后结合医学知识回答）
-        #   其他 → tavily（联网检索最新信息）
+        _WEATHER_KW = ["天气", "气温", "下雨", "下雪", "刮风", "湿度",
+                       "降温", "升温", "weather", "temperature", "rain"]
+        _skip_weather = "get_weather" in replan_instruction
         if (state.get("rag_blind_spot")
                 and "tavily" not in used_actions
                 and "wikipedia" not in used_actions):
-            _WEATHER_KW = ["天气", "气温", "下雨", "下雪", "刮风", "湿度",
-                           "降温", "升温", "weather", "temperature", "rain"]
-            # 如果 replan 指令明确让跳过天气工具，则尊重该指令
-            _skip_weather = "get_weather" in replan_instruction
             if (any(kw in question for kw in _WEATHER_KW)
                     and "tool_query" not in used_actions
                     and not _skip_weather):
@@ -789,16 +649,10 @@ def ResearchAgent(state: AgentState) -> AgentState:
                     "relevance": 1.0, "coverage": 1.0, "medical_depth": 1.0,
                     "action": "tool_query",
                     "param": f"get_weather|{question}",
-                    "reason": (
-                        f"知识库盲区（score={state.get('rag_blind_score',0):.3f}）"
-                        "且问题涉及天气，先获取实时气象数据。"
-                    ),
+                    "reason": f"知识库盲区（score={state.get('rag_blind_score',0):.3f}）且问题涉及天气，先获取实时气象数据。",
                     "iteration": iteration,
                 }
-                logger.info(
-                    "ResearchAgent THINK [iter=%d] 天气盲区强制路由 → get_weather",
-                    iteration,
-                )
+                logger.info("ResearchAgent THINK [iter=%d] 天气盲区强制路由 → get_weather", iteration)
             else:
                 think_result = {
                     "relevance": 1.0, "coverage": 1.0, "medical_depth": 1.0,
@@ -807,10 +661,7 @@ def ResearchAgent(state: AgentState) -> AgentState:
                     "reason": f"知识库盲区（score={state.get('rag_blind_score',0):.3f}），强制路由到 tavily。",
                     "iteration": iteration,
                 }
-                logger.info(
-                    "ResearchAgent THINK [iter=%d] 盲区强制路由 → tavily（跳过 LLM 决策）",
-                    iteration,
-                )
+                logger.info("ResearchAgent THINK [iter=%d] 盲区强制路由 → tavily", iteration)
         else:
             think_result = _think(
                 question, docs, iteration, used_actions,
@@ -818,10 +669,8 @@ def ResearchAgent(state: AgentState) -> AgentState:
                 rag_blind_spot=state.get("rag_blind_spot", False),
                 rag_blind_score=state.get("rag_blind_score", 0.0),
             )
-        # ───────────────────────────────────────────────────────────────
         think_result["iteration"] = iteration
         think_log.append(think_result)
-        # 记录本轮评分，供下一轮参考
         prev_scores = {
             "relevance": think_result.get("relevance", 5.0),
             "coverage": think_result.get("coverage", 5.0),
@@ -834,17 +683,14 @@ def ResearchAgent(state: AgentState) -> AgentState:
             "ResearchAgent THINK [iter=%d] action=%s param=%s reason=%s",
             iteration, action, param[:40], think_result.get("reason", ""),
         )
-
         used_actions.append(action)
 
-        # ── ACT ──────────────────────────────────────────────────────────
         if action == "accept":
             break
 
         elif action == "rag_search" or action == "expand_query":
             new_docs = _rag_search(param, state)
             if new_docs:
-                # 合并去重
                 existing_contents = {d.page_content for d in docs}
                 for d in new_docs:
                     if d.page_content not in existing_contents:
@@ -868,7 +714,6 @@ def ResearchAgent(state: AgentState) -> AgentState:
             state["rag_attempted"] = True
 
         elif action == "tool_query":
-            # param 格式：tool_name|查询参数
             parts = param.split("|", 1)
             tool_name = parts[0].strip()
             tool_param = parts[1].strip() if len(parts) > 1 else question
@@ -878,10 +723,6 @@ def ResearchAgent(state: AgentState) -> AgentState:
                 state["tool_agent_success"] = True
                 logger.info("ResearchAgent 工具调用：%s → %s", tool_name, tool_result[:60])
 
-                # ── 工具失败自动兜底：若工具返回错误信息且无高质量文档，直接尝试 Tavily ──
-                # 根因：get_weather 在国内网络下调用 Open-Meteo API 经常超时/断连，
-                # 如果此时文档不足（rerank 偏低），当前迭代直接 fallthrough 到 Tavily，
-                # 而不是等下一轮 THINK 决策（往往来不及，已经接近 MAX_ITER 末尾）。
                 _FAIL_INDICATORS = ("失败", "Error", "error", "未能", "无法", "timeout")
                 _has_good_docs = any(
                     d.metadata.get("rerank_score", 0) >= 0.5 for d in docs
@@ -913,7 +754,6 @@ def ResearchAgent(state: AgentState) -> AgentState:
                 record_fallback(state, f"research_unknown_tool:{tool_name}")
 
         elif action == "wikipedia":
-            # MCP Wikipedia 优先（内容更完整）
             wiki_success = False
             if MCP_ENABLED and MCP_AVAILABLE:
                 try:
@@ -932,7 +772,6 @@ def ResearchAgent(state: AgentState) -> AgentState:
                         logger.info("ResearchAgent MCP Wikipedia 成功，%d 条", len(mcp_results))
                 except Exception as exc:
                     logger.debug("MCP Wikipedia 降级到 langchain wrapper：%s", exc)
-            # 降级：langchain WikipediaAPIWrapper
             if not wiki_success:
                 wiki = get_wikipedia_wrapper()
                 if wiki:
@@ -953,7 +792,6 @@ def ResearchAgent(state: AgentState) -> AgentState:
             state["wiki_attempted"] = True
 
         elif action == "tavily":
-            # MCP Tavily 优先
             tavily_success = False
             if MCP_ENABLED and MCP_AVAILABLE:
                 try:
@@ -970,7 +808,6 @@ def ResearchAgent(state: AgentState) -> AgentState:
                         logger.info("ResearchAgent MCP Tavily 成功，%d 条", len(mcp_results))
                 except Exception as exc:
                     logger.debug("MCP Tavily 降级到 langchain wrapper：%s", exc)
-            # 降级：langchain TavilySearchResults
             if not tavily_success:
                 tavily = get_tavily_search()
                 if tavily:
@@ -995,7 +832,6 @@ def ResearchAgent(state: AgentState) -> AgentState:
             state["tavily_attempted"] = True
 
         elif action == "llm_direct":
-            # 直接 LLM 推理，无需外部文档
             answer, source = _generate_answer(
                 question, [], "", history_context, long_term_prefix, llm
             )
@@ -1012,24 +848,21 @@ def ResearchAgent(state: AgentState) -> AgentState:
             logger.info("ResearchAgent [llm_direct] 退出循环")
             return state
 
-    # ── 退出循环：生成最终答案 ─────────────────────────────────────────────
     answer, source = _generate_answer(
         question, docs, tool_result, history_context, long_term_prefix, llm
     )
 
-    # 写回 state
     state["documents"] = docs
     state["generation"] = answer
     state["source"] = source
     state["rag_grader_passed"] = bool(docs or tool_result)
     state["rag_iterations"] = len([t for t in think_log if t.get("action") != "accept"])
     state["rag_think_log"] = think_log
-    state["research_strategy"] = ",".join(dict.fromkeys(used_actions))  # 去重保序
+    state["research_strategy"] = ",".join(dict.fromkeys(used_actions))
     state["llm_attempted"] = True
     state["llm_success"] = bool(answer and len(answer) > 10)
     state["metrics"]["llm_used"] = True
 
-    # 写入对话历史
     state["conversation_history"].append({"role": "user", "content": question})
     state["conversation_history"].append({"role": "assistant", "content": answer, "source": source})
 
