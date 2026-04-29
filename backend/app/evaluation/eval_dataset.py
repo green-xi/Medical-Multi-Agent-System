@@ -12,8 +12,7 @@ from typing import Any, Dict, List
 # 中推导出来，不能推导的断言占比即为失分。
 #
 # 因此 contexts 必须覆盖 answer 中的每一个关键断言：
-#   ✗ 错误做法：contexts 只写骨干知识，answer 写得比 contexts 更丰富
-#   ✓ 正确做法：contexts 是 answer 的"证据库"，answer 中每句话都能在 contexts 找到来源
+# contexts 是 answer 的"证据库"，answer 中每句话都能在 contexts 找到来源
 #
 # ground_truth 应与 answer 内容深度对齐（但可以更简洁），
 # 否则 Context Recall 会因"ground_truth 提到但 context 未覆盖"而失分。
