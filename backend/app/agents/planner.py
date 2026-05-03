@@ -1,5 +1,6 @@
 """Plan-Replan 闭环规划器：初始路由决策 + 结果评估与重规划。"""
 
+
 import json
 import re
 from time import perf_counter
@@ -15,7 +16,7 @@ from app.core.state import (
 )
 from app.tools.llm_client import get_llm
 
-MAX_REPLAN = 1
+MAX_REPLAN = 1  # 最多重规划次数
 
 MEDICAL_KEYWORDS = [
     "发烧", "头痛", "咳嗽", "胸痛", "腹痛", "腹泻", "呕吐", "恶心",
@@ -34,31 +35,43 @@ TOOL_KEYWORDS = [
 ]
 
 
+# 　 初始路由决策 　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　─
+
 def _keyword_route(question: str) -> RouteDecision:
     normalized = question.lower()
     has_tool_kw = any(kw in normalized for kw in TOOL_KEYWORDS)
     has_medical_kw = any(kw in normalized for kw in MEDICAL_KEYWORDS)
 
+    # 同时命中工具和医学关键词时，医学优先
+    # 例："今天的温度和湿度，在北京腿疼是因为风湿吗" → 湿度触发工具、腿疼/风湿触发医学
     if has_tool_kw and has_medical_kw:
         return {
-            "is_medical": True, "tool": "retriever", "confidence": 0.72,
+            "is_medical": True,
+            "tool": "retriever",
+            "confidence": 0.72,
             "reason": "同时命中工具和医学关键词，医学意图优先，走知识库检索。",
             "strategy": "keyword_fallback",
         }
     if has_tool_kw:
         return {
-            "is_medical": True, "tool": "tool_agent", "confidence": 0.75,
+            "is_medical": True,
+            "tool": "tool_agent",
+            "confidence": 0.75,
             "reason": "命中工具类关键词（天气/药品/检验指标），优先调用结构化工具。",
             "strategy": "keyword_fallback",
         }
     if any(kw in normalized for kw in MEDICAL_KEYWORDS):
         return {
-            "is_medical": True, "tool": "retriever", "confidence": 0.72,
+            "is_medical": True,
+            "tool": "retriever",
+            "confidence": 0.72,
             "reason": "命中医学关键词，优先使用知识库检索增强回答可靠性。",
             "strategy": "keyword_fallback",
         }
     return {
-        "is_medical": False, "tool": "llm_agent", "confidence": 0.62,
+        "is_medical": False,
+        "tool": "llm_agent",
+        "confidence": 0.62,
         "reason": "未命中明显医学检索意图，优先走通用中文问答。",
         "strategy": "keyword_fallback",
     }
@@ -103,13 +116,20 @@ def _llm_route(question: str, llm) -> RouteDecision | None:
         return None
 
 
+# 　 执行结果评估（第二次调用时使用） 　　　　　　　　　　　　　　　　　　　　　
+
 def _llm_evaluate(question: str, generation: str, llm) -> PlannerEval | None:
+    """
+    用 LLM 判断 ResearchAgent 的生成结果是否满足原始查询意图。
+    使用独立的 LLM 调用，不依赖 ResearchAgent 的推理链。
+    """
     if not generation or len(generation.strip()) < 20:
         return {
             "satisfied": False,
             "reason": "生成内容为空或过短，无法满足查询需求。",
             "replan_action": "请重新检索并生成完整的医疗回答。",
             "replan_count": 0,
+            "phase": "eval",   # 由调用方覆盖，此处为类型完整性占位
         }
 
     prompt = (
@@ -135,7 +155,8 @@ def _llm_evaluate(question: str, generation: str, llm) -> PlannerEval | None:
             "satisfied": bool(payload.get("satisfied", False)),
             "reason": str(payload.get("reason", "")),
             "replan_action": str(payload.get("replan_action", "")),
-            "replan_count": 0,
+            "replan_count": 0,  # 由调用方填充
+            "phase": "eval",    # 由调用方覆盖，此处为类型完整性占位
         }
     except Exception as exc:
         logger.warning("Planner 评估 LLM 失败：%s", exc)
@@ -143,13 +164,16 @@ def _llm_evaluate(question: str, generation: str, llm) -> PlannerEval | None:
 
 
 def _heuristic_evaluate(generation: str) -> PlannerEval:
+    """LLM 不可用时的启发式评估降级。"""
     if not generation or len(generation.strip()) < 50:
         return {
             "satisfied": False,
             "reason": "回答内容过短，启发式判断不满足。",
             "replan_action": "请重新检索并生成更完整的回答。",
             "replan_count": 0,
+            "phase": "eval",
         }
+    # 检测常见"无法回答"套话
     evasion_patterns = ["暂时无法", "无法给出", "无法分析", "请咨询医生", "建议就医"]
     if all(p in generation for p in evasion_patterns[:2]):
         return {
@@ -157,23 +181,55 @@ def _heuristic_evaluate(generation: str) -> PlannerEval:
             "reason": "回答仅包含免责声明，缺乏实质医学内容。",
             "replan_action": "请提供更具体的医学信息，不能仅给出就医建议。",
             "replan_count": 0,
+            "phase": "eval",
         }
     return {
         "satisfied": True,
         "reason": "回答长度和内容符合基本要求（启发式判断）。",
         "replan_action": "",
         "replan_count": 0,
+        "phase": "eval",
     }
 
 
+# 　 主函数 　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　─
+
 def PlannerAgent(state: AgentState) -> AgentState:
+    """
+    Plan-Replan 闭环规划器。
+
+    第一次调用：state["planner_eval"] 为 None → 执行初始路由规划
+    第二次调用：state["planner_eval"] 不为 None → 评估 ResearchAgent 结果，决定放行或重规划
+    """
     start_time = perf_counter()
     append_tool_trace(state, "planner")
     llm = get_llm()
 
+    # 　 判断是第一次调用还是回溯评估 　　　　　　　　　　　　　　　　　　　　─
     is_evaluating = state.get("planner_eval") is not None
 
+    # 　 Critic 重入路径：直接放行，不消耗 replan_count 　　　　　　　　　　　
+    # 当 critic_reentry=True 时，本次 research 是由 Critic 核查失败触发的，
+    # 目的是修复幻觉/事实错误，与"原始意图未满足"无关。
+    # Planner 无需重新评估，直接设置 satisfied=True 放行至 Critic 重新核查。
+    if state.get("critic_reentry", False):
+        state["critic_reentry"] = False  # 消费标记，避免残留影响下一轮
+        current_replan_count = (state.get("planner_eval") or {}).get("replan_count", 0)
+        state["planner_eval"] = {
+            "phase":         "eval",
+            "satisfied":     True,
+            "reason":        "Critic 重入路径：直接放行至 Critic 重新核查，不消耗 replan_count。",
+            "replan_action": "",
+            "replan_count":  current_replan_count,  # 保留原有计数，不递增
+        }
+        set_node_latency(state, "planner", (perf_counter() - start_time) * 1000)
+        logger.info("Planner [Critic重入] 直接放行，replan_count 保持 %d", current_replan_count)
+        return state
+
     if not is_evaluating:
+       
+        # 阶段一：初始规划（制定执行路径）
+       
         question = state["question"].strip()
 
         decision: RouteDecision | None = None
@@ -190,11 +246,14 @@ def PlannerAgent(state: AgentState) -> AgentState:
         state["route_decision"] = decision
         state["current_tool"] = decision["tool"]
         state["confidence_score"] = decision["confidence"]
+
+        # 初始化 planner_eval 为占位值，区别于 None（代表"已路由，待评估"）
         state["planner_eval"] = {
             "satisfied": False,
             "reason": "初始规划完成，等待执行结果。",
             "replan_action": "",
             "replan_count": 0,
+            "phase": "init",          # 显式阶段标记，路由函数用此字段判断分支
         }
         state["replan_instruction"] = ""
 
@@ -204,22 +263,47 @@ def PlannerAgent(state: AgentState) -> AgentState:
         )
 
     else:
+        
+        # 阶段二：执行结果评估 + 可能的 Replan
+        
         question = state.get("original_question") or state["question"]
         generation = state.get("generation", "")
+
+        #  闲聊短路：llm_agent 问题直接放行 
+        # 问候/闲聊类问题不需要"实质性医学信息"，LLM 评估会误判为不满足
+        if state.get("current_tool") == "llm_agent":
+            state["planner_eval"] = {
+                "satisfied": True,
+                "reason": "闲聊/通用问答，无需医学评估，直接放行。",
+                "replan_action": "",
+                "replan_count": state["planner_eval"].get("replan_count", 0),
+                "phase": "eval",
+            }
+            logger.info("Planner [评估] 闲聊短路放行（llm_agent 不评估）")
+            set_node_latency(state, "planner_eval", (perf_counter() - start_time) * 1000)
+            return state
+
+
+        # 　 replan_count 来源：只读 Planner 自己写入的计数
+        # Critic 失败后重入时，planner_eval 已被 Planner 在上一轮写为 phase="eval"，
+        # replan_count 保持不变（Critic 失败不消耗 Planner 重规划次数）。
         current_replan_count = state["planner_eval"].get("replan_count", 0)
 
+        # 超出重规划上限，强制放行
         if current_replan_count >= MAX_REPLAN:
             state["planner_eval"] = {
                 "satisfied": True,
                 "reason": f"已达重规划上限（{MAX_REPLAN}次），强制放行以保证响应速度。",
                 "replan_action": "",
                 "replan_count": current_replan_count,
+                "phase": "eval",
             }
             state["metrics"]["replan_count"] = current_replan_count
             logger.info("Planner [评估] 重规划次数已达上限，强制放行")
             set_node_latency(state, "planner_eval", (perf_counter() - start_time) * 1000)
             return state
 
+        # LLM 评估
         eval_result: PlannerEval | None = None
         if llm:
             eval_result = _llm_evaluate(question, generation, llm)
@@ -227,19 +311,28 @@ def PlannerAgent(state: AgentState) -> AgentState:
             eval_result = _heuristic_evaluate(generation)
 
         eval_result["replan_count"] = current_replan_count
+        eval_result["phase"] = "eval"          # 显式标记为评估阶段
         state["planner_eval"] = eval_result
 
         if eval_result["satisfied"]:
             state["metrics"]["replan_count"] = current_replan_count
-            logger.info("Planner [评估] ✓ 结果满足意图：%s", eval_result["reason"])
+            logger.info(
+                "Planner [评估] ✓ 结果满足意图：%s", eval_result["reason"]
+            )
         else:
+            # 触发重规划：写入补充指令，重置 ResearchAgent 相关状态
             new_replan_count = current_replan_count + 1
             state["planner_eval"]["replan_count"] = new_replan_count
 
+            # 　 智能重规划指令：检测上一轮失败模式，注入不同策略 　　　　　　
+            # 根因：LLM 生成的 replan_action 通常很笼统（"请重新检索"），
+            # ResearchAgent 会重复相同的失败路径（expand_query→tool_query→失败→短回答）。
+            # 这里检测失败模式，注入具体指令打破循环。
             tool_results = state.get("tool_results", {}) or {}
             prev_tool_result = tool_results.get("result", "")
             prev_tool_name = tool_results.get("tool", "")
 
+            # 模式1：get_weather 工具失败（网络错误/超时）→ 跳过天气，直接联网检索医学知识
             if "天气查询失败" in prev_tool_result or "get_weather" in prev_tool_name:
                 state["replan_instruction"] = (
                     "【重规划指令】上一轮 get_weather 工具因网络问题失败。"
@@ -247,16 +340,20 @@ def PlannerAgent(state: AgentState) -> AgentState:
                     "搜索词建议包含：天气与关节疼痛的关系、风湿诱因。"
                 )
                 logger.info("Planner [评估] 检测到天气工具失败，注入 Tavily 优先策略")
+            # 模式2：RAG 盲区（rerank 偏低）→ 跳过 expand_query，直接 tavily
             elif state.get("rag_blind_spot"):
                 state["replan_instruction"] = (
                     "【重规划指令】上一轮 RAG 检索命中盲区（本地知识库无相关内容）。"
                     "本轮请直接使用 tavily 联网检索，不要执行 rag_search 或 expand_query。"
                 )
                 logger.info("Planner [评估] 检测到 RAG 盲区，注入 Tavily 优先策略")
+            # 模式3：默认使用 LLM 评估生成的指令
             else:
                 state["replan_instruction"] = eval_result["replan_action"]
 
             state["metrics"]["replan_count"] = new_replan_count
+
+            # 重置执行状态，让 ResearchAgent 重新运行
             state["generation"] = ""
             state["documents"] = []
             state["rag_grader_passed"] = False
@@ -281,3 +378,4 @@ def PlannerAgent(state: AgentState) -> AgentState:
         (perf_counter() - start_time) * 1000,
     )
     return state
+

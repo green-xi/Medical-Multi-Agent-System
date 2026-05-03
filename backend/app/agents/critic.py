@@ -397,11 +397,7 @@ def CriticAgent(state: AgentState) -> AgentState:
             f"[CriticAgent 第{attempt_count}次核查反馈] {result['feedback']}\n"
             "请重新检索并修正上述问题后重新生成答案。"
         )
-        state["planner_eval"] = {
-            "satisfied": False, "reason": f"CriticAgent 核查不通过：{result['feedback'][:80]}",
-            "replan_action": result["feedback"],
-            "replan_count": state.get("planner_eval" or {}).get("replan_count", 0),
-        }
+        state["critic_reentry"] = True  
         record_fallback(state, f"critic_failed_attempt{attempt_count}:{result['feedback'][:60]}")
         logger.warning(
             "CriticAgent ✗ 第 %d 次核查不通过（来源=%s，幻觉=%s），触发重检索",
