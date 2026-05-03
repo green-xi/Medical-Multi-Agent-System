@@ -1,33 +1,11 @@
 """
-MedicalAI — core/langgraph_workflow.py
 LangGraph 状态图定义：五 Agent 精简架构。
-
-工作流架构：
-
-  memory ──(有缓存答案)───► END
-    │
-    │(无缓存)
-    ▼
-  query_rewriter → planner(初始规划, phase="init")
-                         │
-                         ▼
-                   research_agent          ← ReAct 内部循环
-                         │                   (RAG/工具/Wiki/Tavily)
-                         ▼
-                   planner(结果评估, phase="eval")
-                    ┌────┴────┐
-              不满足│         │满足
-                    ▼         ▼
-                research   critic_agent     ← 独立事实核查
-                (重规划)    ┌──┴──┐
-                         不通过│     │通过
-                               ▼     ▼
-                           research  END
-                           (重检索，不经 planner)
 
 路由函数说明：
   _route_after_memory       有缓存→END，无缓存→query_rewriter
-  _route_after_planner      phase="init"→research；phase="eval" satisfied→critic；否则→research
+  _route_after_planner      skip_critic=True（llm_agent路径）→END；
+                            phase="init"→research；
+                            phase="eval" satisfied→critic；否则→research
   _route_after_critic       通过→END；不通过→research（直接重检索，不经 Planner）
 
 设计原则：
@@ -46,7 +24,7 @@ from app.agents.critic import CriticAgent
 from app.core.state import AgentState
 
 
-# 路由函数 
+#  路由函数 
 
 def _route_after_memory(state: AgentState) -> str:
     """
@@ -62,11 +40,16 @@ def _route_after_memory(state: AgentState) -> str:
 def _route_after_planner(state: AgentState) -> str:
     """
     Planner 路由，基于显式 phase 字段判断，不依赖 reason 字符串匹配：
-    - phase="init"  → 初始规划刚完成，进入 research 执行
+    - skip_critic=True  → llm_agent 路径，直接 END（闲聊/通用问答，无需 Critic）
+    - phase="init"      → 初始规划刚完成，进入 research 执行
     - phase="eval" + satisfied=True  → 结果满意，进入 critic 核查
     - phase="eval" + satisfied=False → 结果不满意，重规划，回到 research
     - planner_eval 为 None（防御性兜底）→ 进入 research
     """
+    # llm_agent 路径（闲聊/通用问答）：跳过 Critic 直接结束
+    if state.get("skip_critic", False):
+        return END
+
     eval_result = state.get("planner_eval")
     if eval_result is None:
         return "research"
@@ -138,6 +121,7 @@ def create_workflow():
         "planner",
         _route_after_planner,
         {
+            END:        END,        # llm_agent 路径（闲聊/通用问答）直接结束
             "research": "research",
             "critic":   "critic",
         },

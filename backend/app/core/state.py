@@ -1,5 +1,6 @@
 """工作流状态类型定义与辅助函数。"""
 
+
 from typing import Any, Dict, List, Literal, Optional, TypedDict
 
 from langchain_core.documents import Document
@@ -29,7 +30,7 @@ class RouteDecision(TypedDict):
     strategy: Literal["llm_classifier", "keyword_fallback", "safe_default"]
 
 
-#  Planner Replan 相关 　
+#  Planner Replan 相关 
 
 class PlannerEval(TypedDict):
     """Planner 对 ResearchAgent 执行结果的评估。"""
@@ -41,7 +42,7 @@ class PlannerEval(TypedDict):
     phase: str                # 显式阶段标记："init"（初始规划）| "eval"（结果评估）
                               # 路由函数用此字段判断分支，不再依赖 reason 字符串匹配
 
-# 　 Critic 评估结果 　　
+#  Critic 评估结果 
 
 class FactCheckItem(TypedDict):
     claim: str                # 答案中提取的医学事实断言
@@ -71,12 +72,14 @@ class WorkflowMetrics(TypedDict):
 
 
 class AgentState(TypedDict):
-    # 　 记忆短路标记 　　
+    #  记忆短路标记 
     cache_hit: bool                       # True 时 memory 直接返回缓存答案，跳过全链路
     critic_reentry: bool                  # True 时表示本次 research 由 Critic 失败触发，
                                           # Planner 应直接放行至 Critic，不重计 replan_count
+    skip_critic: bool                     # True 时 Planner 评估后直接到 END，跳过 CriticAgent
+                                          # 用于 llm_agent（闲聊/通用问答）路径
                                           
-    # 　 核心问答字段 　─
+    #  核心问答字段 
     question: str
     original_question: str
     documents: List[Document]
@@ -84,44 +87,44 @@ class AgentState(TypedDict):
     source: str
     search_query: str
 
-    # 　 查询重写字段 　─
+    #  查询重写字段 
     query_intent: str
     expanded_queries: List[str]
     thinking_steps: List[str]
 
-    # 　 会话标识 　　
+    #  会话标识 
     session_id: str
 
-    # 　 短期记忆 　　
+    #  短期记忆 
     conversation_history: List[ChatTurn]
     context_window: List[ChatTurn]
 
-    # 　 长期记忆 　　
+    #  长期记忆 
     long_term_context: str
 
-    # 　 路由与工具状态 　
+    #  路由与工具状态 
     current_tool: ToolName
     confidence_score: float
     route_decision: RouteDecision
 
-    # 　 Planner Plan-Replan 闭环字段 　
+    #  Planner Plan-Replan 闭环字段 
     planner_eval: Optional[PlannerEval]   # Planner 对本轮执行结果的评估
     replan_instruction: str               # 重规划时给 ResearchAgent 的补充指令
     
-    # 　 Memory 短路标记 　
+    #  Memory 短路标记 
     cached_answer: str                    # memory 命中时写入，非空则跳过全链路直接输出
 
-    # 　 ResearchAgent（原 RAGGrader）字段 　
+    #  ResearchAgent（原 RAGGrader）字段 
     rag_grader_passed: bool
     rag_iterations: int
     rag_think_log: List[Dict]
     research_strategy: str                # 本轮 ResearchAgent 选用的策略
 
-    # 　 Tool 状态（内化进 ResearchAgent） 　
+    #  Tool 状态（内化进 ResearchAgent） 
     tool_results: Dict[str, Any]
     tool_agent_success: bool
 
-    # 　 LLM 状态 　　
+    #  LLM 状态 
     llm_attempted: bool
     llm_success: bool
     rag_attempted: bool
@@ -132,17 +135,17 @@ class AgentState(TypedDict):
     tavily_success: bool
     retry_count: int
 
-    # 　 CriticAgent 字段 　
+    #  CriticAgent 字段 
     critic_result: Optional[CriticResult]  # Critic 评估结果
     critic_attempt_count: int   # 已执行核查次数，进入时递增（MAX_CRITIC_ATTEMPTS=2）
 
-    # 　 可观测性 　　
+    #  可观测性 
     tool_trace: List[str]
     fallback_events: List[str]
     metrics: WorkflowMetrics
 
 
-# 　 工厂函数 　　
+#  工厂函数 
 
 def default_route_decision() -> RouteDecision:
     return {
@@ -173,6 +176,7 @@ def initialize_conversation_state(session_id: str = "") -> AgentState:
     return {
         "cache_hit": False,
         "critic_reentry": False,
+        "skip_critic": False,
         "question": "",
         "original_question": "",
         "documents": [],
@@ -221,6 +225,7 @@ def reset_query_state(state: AgentState) -> AgentState:
         {
             "cache_hit": False,
             "critic_reentry": False,
+            "skip_critic": False,
             "question": "",
             "original_question": "",
             "documents": [],
