@@ -1,6 +1,5 @@
 """Plan-Replan 闭环规划器：初始路由决策 + 结果评估与重规划。"""
 
-
 import json
 import re
 from time import perf_counter
@@ -35,7 +34,7 @@ TOOL_KEYWORDS = [
 ]
 
 
-# 　 初始路由决策 　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　─
+#  初始路由决策 
 
 def _keyword_route(question: str) -> RouteDecision:
     normalized = question.lower()
@@ -116,7 +115,7 @@ def _llm_route(question: str, llm) -> RouteDecision | None:
         return None
 
 
-# 　 执行结果评估（第二次调用时使用） 　　　　　　　　　　　　　　　　　　　　　
+#  执行结果评估（第二次调用时使用） 
 
 def _llm_evaluate(question: str, generation: str, llm) -> PlannerEval | None:
     """
@@ -192,7 +191,7 @@ def _heuristic_evaluate(generation: str) -> PlannerEval:
     }
 
 
-# 　 主函数 　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　─
+#  主函数 
 
 def PlannerAgent(state: AgentState) -> AgentState:
     """
@@ -205,10 +204,10 @@ def PlannerAgent(state: AgentState) -> AgentState:
     append_tool_trace(state, "planner")
     llm = get_llm()
 
-    # 　 判断是第一次调用还是回溯评估 　　　　　　　　　　　　　　　　　　　　─
+    #  判断是第一次调用还是回溯评估 
     is_evaluating = state.get("planner_eval") is not None
 
-    # 　 Critic 重入路径：直接放行，不消耗 replan_count 　　　　　　　　　　　
+    #  Critic 重入路径：直接放行，不消耗 replan_count 
     # 当 critic_reentry=True 时，本次 research 是由 Critic 核查失败触发的，
     # 目的是修复幻觉/事实错误，与"原始意图未满足"无关。
     # Planner 无需重新评估，直接设置 satisfied=True 放行至 Critic 重新核查。
@@ -227,9 +226,9 @@ def PlannerAgent(state: AgentState) -> AgentState:
         return state
 
     if not is_evaluating:
-       
+        # ══════════════════════════════════
         # 阶段一：初始规划（制定执行路径）
-       
+        # ══════════════════════════════════
         question = state["question"].strip()
 
         decision: RouteDecision | None = None
@@ -263,15 +262,18 @@ def PlannerAgent(state: AgentState) -> AgentState:
         )
 
     else:
-        
+        # ══════════════════════════════════════════
         # 阶段二：执行结果评估 + 可能的 Replan
-        
+        # ══════════════════════════════════════════
         question = state.get("original_question") or state["question"]
         generation = state.get("generation", "")
 
         #  闲聊短路：llm_agent 问题直接放行 
-        # 问候/闲聊类问题不需要"实质性医学信息"，LLM 评估会误判为不满足
+        # 问候/闲聊类问题不需要"实质性医学信息"，LLM 评估会误判为不满足。
+        # 同时标记 skip_critic=True，让 _route_after_planner 直接路由到 END，
+        # 跳过 CriticAgent（闲聊回答无需事实核查，节省 20-60 秒）。
         if state.get("current_tool") == "llm_agent":
+            state["skip_critic"] = True
             state["planner_eval"] = {
                 "satisfied": True,
                 "reason": "闲聊/通用问答，无需医学评估，直接放行。",
@@ -279,12 +281,11 @@ def PlannerAgent(state: AgentState) -> AgentState:
                 "replan_count": state["planner_eval"].get("replan_count", 0),
                 "phase": "eval",
             }
-            logger.info("Planner [评估] 闲聊短路放行（llm_agent 不评估）")
+            logger.info("Planner [评估] 闲聊短路放行（llm_agent 不评估，跳过 Critic）")
             set_node_latency(state, "planner_eval", (perf_counter() - start_time) * 1000)
             return state
 
-
-        # 　 replan_count 来源：只读 Planner 自己写入的计数
+        #  replan_count 来源：只读 Planner 自己写入的计数
         # Critic 失败后重入时，planner_eval 已被 Planner 在上一轮写为 phase="eval"，
         # replan_count 保持不变（Critic 失败不消耗 Planner 重规划次数）。
         current_replan_count = state["planner_eval"].get("replan_count", 0)
@@ -324,7 +325,7 @@ def PlannerAgent(state: AgentState) -> AgentState:
             new_replan_count = current_replan_count + 1
             state["planner_eval"]["replan_count"] = new_replan_count
 
-            # 　 智能重规划指令：检测上一轮失败模式，注入不同策略 　　　　　　
+            #  智能重规划指令：检测上一轮失败模式，注入不同策略 
             # 根因：LLM 生成的 replan_action 通常很笼统（"请重新检索"），
             # ResearchAgent 会重复相同的失败路径（expand_query→tool_query→失败→短回答）。
             # 这里检测失败模式，注入具体指令打破循环。
@@ -378,4 +379,3 @@ def PlannerAgent(state: AgentState) -> AgentState:
         (perf_counter() - start_time) * 1000,
     )
     return state
-
