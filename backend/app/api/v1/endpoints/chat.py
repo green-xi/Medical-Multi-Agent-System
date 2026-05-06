@@ -23,7 +23,7 @@ def _get_session_id(request: Request) -> str:
     return request.session["session_id"]
 
 
-# ── 节点名 → 用户可见的中文进度提示（检索迭代不展示给用户）──────────────────
+#    节点名 → 用户可见的中文进度提示（检索迭代不显示给用户）                  
 _NODE_LABELS = {
     "memory":        "📋 加载记忆档案…",
     "query_rewriter":"✍️ 理解并优化问题…",
@@ -59,11 +59,10 @@ async def chat_endpoint(request: ChatRequest, req: Request):
 async def chat_stream_endpoint(request: ChatRequest, req: Request):
     """
     SSE 流式端点，在工作流执行过程中实时推送节点进度。
-
     事件类型
     --------
     progress  : 节点开始/完成时推送用户可见的进度文字
-                {"step": "✍️ 理解并优化问题…", "node": "query_rewriter"}
+                {"step": " 理解并优化问题…", "node": "query_rewriter"}
     thinking  : QueryRewriter 完成后推送意图分析结果（用于前端"查询优化"面板）
                 {"thinking_steps": [...], "query_intent": "...", "original_question": "..."}
     done      : 工作流完成，推送完整结果（同 /chat 的 response body）
@@ -77,8 +76,6 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request):
     source.addEventListener('done',     e => { renderAnswer(JSON.parse(e.data)); source.close(); });
     source.addEventListener('error',    e => { showError(JSON.parse(e.data)); source.close(); });
 
-    注意：检索迭代（rag_think_log）不在流式阶段推送，仅在 done 事件里携带，
-    由前端在答案渲染后展示在"查看 AI 思考过程"折叠面板里。
     """
     if not chat_service.workflow_app:
         raise HTTPException(status_code=503, detail="系统尚未初始化，请稍后重试")
@@ -87,7 +84,7 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request):
     message = request.message
 
     async def event_generator():
-        # ── 用 astream_events 监听节点级事件 ──────────────────────────────
+        #    用 astream_events 监听节点级事件                                   
         # LangGraph 1.0.x 的 astream_events 在每个节点 start/end 时发出事件
         try:
             from app.core.state import initialize_conversation_state, reset_query_state
@@ -111,7 +108,7 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request):
                 kind      = event.get("event", "")
                 node_name = event.get("name", "")
 
-                # ── 节点开始：推送进度提示 ───────────────────────────────
+                #    节点开始：推送进度提示                                     
                 if kind == "on_chain_start" and node_name in _NODE_LABELS:
                     if node_name not in seen_nodes:
                         seen_nodes.add(node_name)
@@ -120,7 +117,7 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request):
                             "node": node_name,
                         })
 
-                # ── 节点结束：提取关键中间结果 ───────────────────────────
+                #    节点结束：提取关键中间结果                                 
                 elif kind == "on_chain_end" and node_name in _NODE_LABELS:
                     output = event.get("data", {}).get("output", {}) or {}
 
@@ -130,11 +127,12 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request):
                             "thinking_steps":    output.get("thinking_steps", []),
                             "query_intent":      output.get("query_intent", ""),
                             "original_question": output.get("original_question", message),
+                            "rewritten_question": output.get("question", message),
                             "expanded_queries":  output.get("expanded_queries", []),
                         })
 
                     # Research 完成后：把每轮迭代动作都推送为进度步骤
-                    # 这样用户在等待的 30-60s 里能实时看到检索进展
+                    # 这样用户在等待的 30-60s 里能实时看到检索进度
                     # rag_think_log 本身不传给前端（不显示检索迭代细节）
                     elif node_name == "research" and isinstance(output, dict):
                         rag_log = output.get("rag_think_log", [])
@@ -150,7 +148,7 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request):
                     elif node_name == "critic" and isinstance(output, dict):
                         final_result = output
 
-            # ── 工作流结束：构造与 /chat 相同的 done 事件 ──────────────────
+            #    工作流结束：构造与 /chat 相同的 done 事件                     
             if final_result is None:
                 # astream_events 没有给出 critic output 时，回退到 ainvoke
                 state2 = chat_service._get_or_create_session_state(session_id)
@@ -162,24 +160,26 @@ async def chat_stream_endpoint(request: ChatRequest, req: Request):
             # 更新会话状态（与 process_message 保持一致）
             chat_service._touch_session(session_id, final_result)
 
-            response_text = final_result.get("generation", "暂时无法生成回复。")
+            response_text = final_result.get("generation", "暂时无法生成回答。")
             source_label  = final_result.get("source", "未知来源")
             _db.save_message(session_id, "assistant", response_text, source_label)
 
-            from datetime import datetime
+            from datetime import datetime, timezone, timedelta
+            _CST = timezone(timedelta(hours=8))
             yield _make_sse("done", {
-                "response":          response_text,
-                "source":            source_label,
-                "timestamp":         datetime.now().strftime("%H:%M"),
-                "success":           bool(response_text),
-                "session_id":        session_id,
-                "thinking_steps":    final_result.get("thinking_steps", []),
-                "original_question": final_result.get("original_question", message),
-                "query_intent":      final_result.get("query_intent", ""),
+                "response":           response_text,
+                "source":             source_label,
+                "timestamp":          datetime.now(_CST).strftime("%H:%M"),
+                "success":            bool(response_text),
+                "session_id":         session_id,
+                "thinking_steps":     final_result.get("thinking_steps", []),
+                "original_question":  final_result.get("original_question", message),
+                "rewritten_question": final_result.get("question", message),
+                "query_intent":       final_result.get("query_intent", ""),
                 # rag_think_log 不传给前端：检索迭代细节不在用户界面显示，
                 # 进度信息已通过 progress 事件逐步推送，done 里不再重复
-                "rag_think_log":     [],
-                "tool_trace":        final_result.get("tool_trace", []),
+                "rag_think_log":      [],
+                "tool_trace":         final_result.get("tool_trace", []),
             })
 
         except Exception as exc:

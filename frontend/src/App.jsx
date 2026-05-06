@@ -1,6 +1,15 @@
+/**
+ * MedicalAI — 前端主应用
+ * 含短期+长期记忆面板
+ */
+
 import { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import './index.css';
+
+
+// SECTION 1 — 工具函数
+
 
 function formatTimeAgo(timestamp) {
   const now = new Date(); const past = new Date(timestamp);
@@ -18,18 +27,18 @@ function getChineseTime() {
   return new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 function buildDownloadText(chatHistory) {
-  let c = '对话记录\n' + '='.repeat(40) + '\n导出时间：' + new Date().toLocaleString('zh-CN') + '\n\n';
+  let c = 'MedicalAI — 对话记录\n' + '='.repeat(40) + '\n导出时间：' + new Date().toLocaleString('zh-CN') + '\n\n';
   chatHistory.forEach(m => {
-    c += '[' + m.timestamp + '] ' + (m.type === 'user' ? '我' : 'AI') + '：\n' + m.content + '\n';
+    c += '[' + m.timestamp + '] ' + (m.type === 'user' ? '我' : 'MedicalAI') + '：\n' + m.content + '\n';
     if (m.source) c += '来源：' + m.source + '\n';
     c += '\n';
   });
   return c + '\n— 此记录仅供参考，不构成医疗诊断建议 —\n';
 }
 
-// ══════════════════════════════════════════════════════════════
+
 // SECTION 2 — 长期记忆面板
-// ══════════════════════════════════════════════════════════════
+
 
 const PROFILE_LABELS = { age:'年龄', gender:'性别', allergies:'过敏史', conditions:'既往病史', medications:'当前用药' };
 const FACT_LABELS = { chief_complaint:'主诉', symptoms:'主要症状', symptom_duration:'持续时长', diagnosis:'诊断建议', advice:'医嘱' };
@@ -122,9 +131,9 @@ function MemoryPanel({ memory, onClearMemory, onManualAdd, isLoading }) {
   );
 }
 
-// ══════════════════════════════════════════════════════════════
+
 // SECTION 3 — 侧边栏
-// ══════════════════════════════════════════════════════════════
+
 
 function Sidebar({ sidebarOpen, sessions, currentSessionId, onNewChat, onLoadSession, onDeleteSession, onToggleTheme, theme, memory, onClearMemory, onManualAdd, memoryLoading }) {
   return (
@@ -180,9 +189,9 @@ function Sidebar({ sidebarOpen, sessions, currentSessionId, onNewChat, onLoadSes
   );
 }
 
-// ══════════════════════════════════════════════════════════════
+
 // SECTION 4 — 欢迎屏
-// ══════════════════════════════════════════════════════════════
+
 
 const QUICK_QUESTIONS = [
   { icon:'fa-thermometer', label:'发烧症状', q:'发烧有哪些常见症状？如何判断需要就医？' },
@@ -231,9 +240,9 @@ function WelcomeScreen({ onQuickQuestion }) {
   );
 }
 
-// ══════════════════════════════════════════════════════════════
+
 // SECTION 4b — 思考过程气泡
-// ══════════════════════════════════════════════════════════════
+
 
 const INTENT_CN = {
   symptom_inquiry:       { label:'症状咨询',   icon:'fa-stethoscope',    color:'#7c3aed' },
@@ -315,9 +324,9 @@ function ThinkingBubble({ msg }) {
   );
 }
 
-// ══════════════════════════════════════════════════════════════
+
 // SECTION 5 — 消息气泡
-// ══════════════════════════════════════════════════════════════
+
 
 const SOURCE_META = {
   '医学知识库':{ icon:'fa-brain', color:'#7c3aed' },
@@ -375,9 +384,9 @@ function MessageBubble({ msg }) {
   );
 }
 
-// ══════════════════════════════════════════════════════════════
+
 // SECTION 6 — 聊天区域
-// ══════════════════════════════════════════════════════════════
+
 
 function ChatArea({ messages, isTyping, progressSteps, showWelcome, onQuickQuestion, chatAreaRef }) {
   return (
@@ -418,9 +427,9 @@ function ChatArea({ messages, isTyping, progressSteps, showWelcome, onQuickQuest
   );
 }
 
-// ══════════════════════════════════════════════════════════════
+
 // SECTION 7 — 输入区域
-// ══════════════════════════════════════════════════════════════
+
 
 function InputArea({ inputValue, setInputValue, onSend, isTyping, inputRef }) {
   const maxChars = 500;
@@ -452,9 +461,9 @@ function InputArea({ inputValue, setInputValue, onSend, isTyping, inputRef }) {
   );
 }
 
-// ══════════════════════════════════════════════════════════════
+
 // SECTION 8 — 根组件
-// ══════════════════════════════════════════════════════════════
+
 
 const API_BASE = '/api/v1';
 
@@ -644,7 +653,7 @@ export default function App() {
         if(data.success){
           if(data.session_id&&!currentSessionId)setCurrentSessionId(data.session_id);
           const botMsg={type:'assistant',content:data.response,timestamp:data.timestamp||time,source:data.source||null,
-            rewritten:data.original_question!==data.response?data.original_question:'',
+            rewritten:data.rewritten_question||data.question||'',
             thinking:{thinking_steps:data.thinking_steps||[],original_question:data.original_question||'',query_intent:data.query_intent||'',rag_think_log:data.rag_think_log||[],tool_trace:data.tool_trace||[]}};
           setMessages(prev=>[...prev,botMsg]);setChatHistory(prev=>[...prev,botMsg]);
         }
@@ -679,7 +688,7 @@ export default function App() {
               content:data.response,
               timestamp:data.timestamp||time,
               source:data.source||null,
-              rewritten:data.original_question!==data.response?data.original_question:'',
+              rewritten:data.rewritten_question||data.question||'',
               thinking:{
                 thinking_steps:  (pendingThinking?.thinking_steps)  || data.thinking_steps  || [],
                 original_question:(pendingThinking?.original_question)||data.original_question||'',
