@@ -1,302 +1,349 @@
-"""MCP 统一外部工具客户端（Tavily/Wikipedia/PubMed）。"""
+﻿"""MCP 统一外部工具客户端（Tavily/Wikipedia/PubMed）。"""
 
-import json
-import re
-from time import perf_counter
-from typing import List
-
-from app.core.logging_config import logger
-from app.core.state import AgentState, append_tool_trace, set_node_latency
-from app.tools.llm_client import get_llm
+"""
+通过 MCP（Model Context Protocol）协议统一接入：
+  - Tavily 实时联网搜索
+  - Wikipedia 医学百科
+  - PubMed 医学文献库（可选，需安装 @cyanheads/pubmed-mcp-server）
 
 
-# 　　 Prompt 　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　
+MCP 用 stdio 子进程方式启动工具服务器，每次调用均建立临时会话。
+为避免每次调用都重新启动进程，使用模块级连接池（_server_sessions）缓存活跃会话。
 
-_REWRITE_PROMPT = """\
-你是一名医疗查询理解专家。请分析用户的原始问题，结合对话历史，完成查询重写任务。
+依赖安装
+  pip install mcp langchain-mcp-adapters
+  npm install -g @tavily/mcp          # Tavily MCP 服务器
+  pip install mcp-server-fetch        # Wikipedia（通用 fetch）
+  # 可选：@cyanheads/pubmed-mcp-server（npx 按需加载，无需预安装）
 
-【对话历史（最近3轮）】
-{history}
-
-【用户原始问题】
-{question}
-
-【任务说明】
-请完成以下分析并严格按 JSON 格式返回：
-
-1. intent（意图分类）：从以下选一个
-   - symptom_inquiry（症状咨询）
-   - medication_inquiry（用药/药物询问）
-   - report_interpretation（检验/影像报告解读）
-   - disease_inquiry（疾病知识查询）
-   - treatment_inquiry（治疗方案咨询）
-   - general_health（一般健康咨询）
-   - chitchat（闲聊/非医疗）
-
-2. rewritten_question（重写后的问题）：
-   - 补全省略的主语/指代词
-   - 将口语化表达转为医学规范术语
-   - 若原问题已足够清晰，小幅优化即可，不要过度改写
-   - 保持中文，长度控制在原问题的 1-1.5 倍以内
-
-3. expanded_queries（扩展查询词列表，2-3个）：
-   - 用于向量检索召回更多相关文档
-   - 应覆盖不同角度：病因、症状、治疗、预后等
-
-4. thinking（思考过程，给用户展示的推理步骤列表，每步一句话）：
-   - 步骤1：理解用户意图
-   - 步骤2：识别关键医学概念
-   - 步骤3：查询优化决策
-   - 自然、专业、简洁，每步不超过 30 字
-
-只返回 JSON，不要有多余文字：
-{{
-  "intent": "<意图>",
-  "rewritten_question": "<重写后的问题>",
-  "expanded_queries": ["<扩展词1>", "<扩展词2>"],
-  "thinking": ["<步骤1>", "<步骤2>", "<步骤3>"]
-}}
+.env 配置
+  TAVILY_API_KEY=tvly-xxx
+  MCP_WIKIPEDIA_ENABLED=true          # 默认 true
+  MCP_PUBMED_ENABLED=true            # 默认 true
 """
 
+from __future__ import annotations
 
-# 　　 启发式降级 　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　
+import asyncio
+import json
+import os
+from typing import Any, Dict, List, Optional
 
-_SYMPTOM_WORDS   = [
-    "痛", "疼", "发烧", "咳嗽", "头晕", "恶心", "呕吐", "腹泻", "出血", "肿", "痒",
-    "麻", "乏力", "胸闷", "心悸", "气短", "呼吸困难", "心跳", "晕厥", "抽搐",
-    "流鼻涕", "鼻塞", "打喷嚏", "眼干", "眼涩", "视力", "耳鸣", "耳痛",
-    "腹胀", "便秘", "腹部", "皮疹", "红疹", "脱发", "口干", "口渴", "多汗",
-    "突然", "剧烈",  # 急症触发词
-]
-_MED_WORDS       = [
-    # 通用用药词
-    "药", "吃药", "服用", "剂量", "副作用", "处方", "用药", "停药", "换药",
-    "过量", "中毒", "相互作用", "药物", "药品", "配伍",
-    # 常见具体药名
-    "布洛芬", "阿司匹林", "抗生素", "止痛", "退烧药", "降压药", "降糖药",
-    "二甲双胍", "他汀", "氨氯地平", "厄贝沙坦", "氯沙坦", "美托洛尔",
-    "维生素", "钙片", "叶酸", "铁剂", "鱼油", "益生菌",
-    "头孢", "青霉素", "阿莫西林", "左氧氟沙星", "甲硝唑",
-    "地塞米松", "泼尼松", "氢化可的松",
-    "滴眼液", "眼药水", "鼻喷剂", "气雾剂", "栓剂",
-    # 「是否需要用药」边界意图（AC-001 根本原因）
-    "需要吃", "需要服", "该吃", "该用", "要不要吃", "要不要用",
-    "需要用药", "是否用药", "开始用药", "吃降压", "吃降糖", "吃血压",
-    "需要降压", "需要降糖", "需要控制",
-]
-_REPORT_WORDS    = [
-    "报告", "化验", "检查结果", "检验单", "体检",
-    "ct", "mri", "b超", "超声", "x光", "x线",
-    "血常规", "尿常规", "血脂", "血糖", "肝功能", "肾功能", "甲功",
-    "偏高", "偏低", "正常值", "参考范围", "指标", "数值",
-    "肌酐", "尿酸", "血红蛋白", "白细胞", "血小板",
-    "胆固醇", "甘油三酯", "ldl", "hdl",
-]
-_DISEASE_WORDS   = [
-    "是什么", "什么病", "什么原因", "什么情况", "是什么疾病",
-    "高血压", "低血压", "糖尿病", "高血糖", "低血糖",
-    "肝炎", "肾炎", "肺炎", "胃炎", "肠炎", "关节炎", "结膜炎", "咽炎", "支气管炎",
-    "肿瘤", "癌", "良性", "恶性", "结节", "息肉", "囊肿",
-    "心脏病", "冠心病", "心肌梗死", "心衰", "心律失常",
-    "脑梗", "脑出血", "中风", "偏瘫",
-    "骨质疏松", "骨折", "椎间盘",
-    "过敏", "哮喘", "湿疹", "荨麻疹",
-    "甲亢", "甲减", "甲状腺",
-    "贫血", "白血病", "淋巴瘤",
-    "近视", "青光眼", "白内障",
-    "痛风", "风湿", "类风湿",
-]
-_TREATMENT_WORDS = [
-    "怎么治", "如何治", "治疗", "手术", "方案", "预后", "康复",
-    "怎么办", "如何处理", "如何缓解", "怎么缓解",
-    "能治好吗", "能痊愈吗", "会好吗",
-    "手术风险", "保守治疗", "物理治疗",
-]
+from app.core.logging_config import logger
+from app.core.config import TAVILY_API_KEY, _env
+
+#    MCP 可用性探测                                                             
+
+def _check_mcp_available() -> bool:
+    try:
+        import mcp  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+MCP_AVAILABLE = _check_mcp_available()
+
+#    .env 开关                                                                  
+MCP_WIKIPEDIA_ENABLED = _env("MCP_WIKIPEDIA_ENABLED", "true").lower() == "true"
+MCP_PUBMED_ENABLED    = _env("MCP_PUBMED_ENABLED",    "false").lower() == "true"
 
 
-def _heuristic_rewrite(question: str, history_text: str) -> dict:
-    """LLM 不可用时的关键词启发式降级处理。"""
-    q_lower = question.lower()
+ 
+# MCP 服务器配置表
+ 
 
-    # 　　 扩充词典：chitchat / 急症 / 预防 　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　
-    _CHITCHAT_WORDS = ["你好", "hello", "hi ", "谢谢", "再见", "帮我", "介绍一下你", "你是谁"]
-    _EMERGENCY_WORDS = ["急救", "120", "胸痛", "胸部疼痛", "失去意识", "休克", "大出血", "呼吸停止"]
-    _PREVENTION_WORDS = ["预防", "怎么预防", "如何避免", "降低风险", "减少风险"]
-
-    # 意图推断（优先级从高到低）
-    if any(w in q_lower for w in _CHITCHAT_WORDS) and len(question.strip()) < 15:
-        # 短句 + 闲聊词 → chitchat（避免把含"你好"的医疗问题误判）
-        intent = "chitchat"
-    elif any(w in q_lower for w in _EMERGENCY_WORDS):
-        # 急症词优先于症状词
-        intent = "symptom_inquiry"
-    elif any(w in q_lower for w in _REPORT_WORDS):
-        intent = "report_interpretation"
-    elif any(w in q_lower for w in _MED_WORDS):
-        # 「需要吃/是否用药」等新增词组现在能正确触发此分支
-        intent = "medication_inquiry"
-    elif any(w in q_lower for w in _TREATMENT_WORDS):
-        intent = "treatment_inquiry"
-    elif any(w in q_lower for w in _DISEASE_WORDS):
-        intent = "disease_inquiry"
-    elif any(w in q_lower for w in _SYMPTOM_WORDS):
-        intent = "symptom_inquiry"
-    elif any(w in q_lower for w in _PREVENTION_WORDS):
-        intent = "general_health"
-    else:
-        intent = "general_health"
-
-    # 简单扩展：添加「如何处理」「原因」两个近邻查询
-    expanded = [
-        f"{question} 原因",
-        f"{question} 处理方法",
-    ]
-
-    thinking = [
-        f"理解用户意图：{_INTENT_CN.get(intent, '健康咨询')}",
-        "提取问题中的核心医学关键词",
-        "生成扩展查询以提升检索召回率",
-    ]
-
-    return {
-        "intent": intent,
-        "rewritten_question": question,   # 降级时不改写，保持原样
-        "expanded_queries": expanded,
-        "thinking": thinking,
-    }
-
-
-_INTENT_CN = {
-    "symptom_inquiry":      "症状咨询",
-    "medication_inquiry":   "用药询问",
-    "report_interpretation":"报告解读",
-    "disease_inquiry":      "疾病查询",
-    "treatment_inquiry":    "治疗咨询",
-    "general_health":       "一般健康咨询",
-    "chitchat":             "日常交流",
-}
-
-
-# 　　 主函数 　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　
-
-def QueryRewriterAgent(state: AgentState) -> AgentState:
+def _build_server_configs() -> Dict[str, Dict[str, Any]]:
     """
-    查询重写节点。
-
-    读取：
-      state["question"]            用户原始问题
-      state["conversation_history"] 对话历史
-
-    写入：
-      state["question"]            重写后的问题（替换原始问题，供后续节点使用）
-      state["original_question"]   保存原始问题（用于前端展示和调试）
-      state["query_intent"]        意图分类
-      state["expanded_queries"]    扩展查询词列表（供 RAGGrader expand_query 使用）
-      state["thinking_steps"]      结构化思考步骤列表（供前端展示）
+    根据环境变量动态构建 MCP 服务器配置。
+    只注册已启用且 API Key 已配置的服务器。
     """
-    start_time = perf_counter()
-    append_tool_trace(state, "query_rewriter")
+    configs: Dict[str, Dict[str, Any]] = {}
 
-    original_question = state.get("question", "").strip()
-    if not original_question:
-        set_node_latency(state, "query_rewriter", 0.0)
-        return state
+    #    Tavily                                                                 
+    if TAVILY_API_KEY:
+        configs["tavily"] = {
+            "command": "npx",
+            "args": ["-y", "@tavily/mcp"],
+            "env": {
+                **os.environ,
+                "TAVILY_API_KEY": TAVILY_API_KEY,
+            },
+            "default_tool": "tavily-search",
+        }
 
-    # 保存原始问题
-    state["original_question"] = original_question
+    #    Wikipedia（mcp-server-fetch 通用 HTTP fetch，免 API Key）             
+    if MCP_WIKIPEDIA_ENABLED:
+        configs["wikipedia"] = {
+            "command": "uvx",
+            "args": ["mcp-server-fetch"],
+            "env": dict(os.environ),
+            "default_tool": "fetch",
+        }
 
-    # 构建历史摘要文本
-    history = state.get("context_window") or state.get("conversation_history", [])
-    history_parts = []
-    for turn in history[-6:]:   # 最近3轮
-        role = turn.get("role", "")
-        content = turn.get("content", "")[:80]
-        if role == "user":
-            history_parts.append(f"患者：{content}")
-        elif role == "assistant":
-            history_parts.append(f"助手：{content}")
-    history_text = "\n".join(history_parts) if history_parts else "（无历史对话）"
+    #    PubMed 医学文献库（可选）                                             
+    if MCP_PUBMED_ENABLED:
+        # @cyanheads/pubmed-mcp-server（npm，无需预安装，npx 按需加载）
+        configs["pubmed"] = {
+            "command": "npx",
+            "args": ["-y", "@cyanheads/pubmed-mcp-server@latest"],
+            "env": dict(os.environ),
+            "default_tool": "pubmed_search_articles",
+        }
 
-    # 　　 chitchat 短路：闲聊类问题直接走启发式，不调用 LLM 　　　　　　　　　　　　　　　　　　　　
-    # 判据：启发式能识别为 chitchat，且问题长度 < 20 字（避免把含问候语的医疗问题短路）
-    # 收益：对"你好"/"谢谢"等问题节省 5-12 秒 LLM 调用时间
-    _heuristic_pre = _heuristic_rewrite(original_question, "")
-    if _heuristic_pre["intent"] == "chitchat":
-        result = _heuristic_pre
-        # 跳过 LLM，直接写回 state
-        state["question"]          = result["rewritten_question"]
-        state["original_question"] = original_question
-        state["query_intent"]      = result["intent"]
-        state["expanded_queries"]  = result["expanded_queries"]
-        state["thinking_steps"]    = result["thinking"]
-        latency_ms = (perf_counter() - start_time) * 1000
-        set_node_latency(state, "query_rewriter", latency_ms)
-        logger.info(
-            "QueryRewriter [chitchat短路] | 原始='%s' | 耗时=%.1fms",
-            original_question[:30], latency_ms,
-        )
-        return state
+    return configs
 
-    llm = get_llm()
-    result: dict | None = None
 
-    if llm:
-        prompt = _REWRITE_PROMPT.format(
-            history=history_text,
-            question=original_question,
-        )
-        try:
-            response = llm.invoke(prompt)
-            text = response.content if hasattr(response, "content") else str(response)
-            match = re.search(r"\{.*\}", text, re.DOTALL)
-            if match:
-                payload = json.loads(match.group())
-                # 验证必要字段
-                rewritten = str(payload.get("rewritten_question", "")).strip()
-                expanded  = payload.get("expanded_queries", [])
-                thinking  = payload.get("thinking", [])
-                intent    = str(payload.get("intent", "general_health"))
+MCP_SERVER_CONFIGS = _build_server_configs()
 
-                if not rewritten:
-                    rewritten = original_question
 
-                result = {
-                    "intent": intent,
-                    "rewritten_question": rewritten,
-                    "expanded_queries": [str(q) for q in expanded[:3] if str(q).strip()],
-                    "thinking": [str(s) for s in thinking if str(s).strip()],
-                }
-        except Exception as exc:
-            logger.warning("QueryRewriter LLM 解析失败，降级启发式：%s", exc)
+ 
+# 核心调用函数
+ 
 
-    if result is None:
-        result = _heuristic_rewrite(original_question, history_text)
+async def _call_mcp_tool_async(
+    server_name: str,
+    tool_name: str,
+    arguments: Dict[str, Any],
+    timeout: float = 20.0,
+) -> str:
+    """
+    异步调用指定 MCP 服务器的工具，返回文本结果。
+    每次调用独立启动/关闭 stdio 子进程（无状态，安全可重入）。
+    """
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
 
-    # 　　 写回 state 　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　
-    rewritten_q = result["rewritten_question"]
+    cfg = MCP_SERVER_CONFIGS.get(server_name)
+    if not cfg:
+        raise ValueError(f"MCP 服务器未配置：{server_name}")
 
-    # 构造完整思考步骤（含重写对比）
-    thinking_steps: List[str] = list(result["thinking"])
-
-    # 如果问题发生了实质性变化，追加一条重写说明
-    if rewritten_q != original_question:
-        thinking_steps.append(f"查询优化：「{original_question}」→「{rewritten_q}」")
-
-    state["question"]          = rewritten_q
-    state["original_question"] = original_question
-    state["query_intent"]      = result["intent"]
-    state["expanded_queries"]  = result["expanded_queries"]
-    state["thinking_steps"]    = thinking_steps
-
-    latency_ms = (perf_counter() - start_time) * 1000
-    set_node_latency(state, "query_rewriter", latency_ms)
-
-    logger.info(
-        "QueryRewriter | 意图=%s | 原始='%s' → 重写='%s' | 扩展=%s | 耗时=%.1fms",
-        result["intent"],
-        original_question[:30],
-        rewritten_q[:30],
-        result["expanded_queries"],
-        latency_ms,
+    params = StdioServerParameters(
+        command=cfg["command"],
+        args=cfg["args"],
+        env=cfg.get("env"),
     )
-    return state
+
+    async with stdio_client(params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await asyncio.wait_for(session.initialize(), timeout=timeout)
+            result = await asyncio.wait_for(
+                session.call_tool(tool_name, arguments),
+                timeout=timeout,
+            )
+            parts = []
+            for block in result.content:
+                if hasattr(block, "text") and block.text:
+                    parts.append(block.text)
+            return "\n".join(parts)
+
+
+def call_mcp_tool(
+    server_name: str,
+    tool_name: Optional[str] = None,
+    arguments: Optional[Dict[str, Any]] = None,
+    timeout: float = 20.0,
+) -> str:
+    """
+    同步包装：供现有同步代码（ResearchAgent）直接调用。
+
+    参数
+    server_name : MCP_SERVER_CONFIGS 中的键（"tavily" / "wikipedia" / "pubmed"）
+    tool_name   : MCP 工具名，省略时使用该服务器的 default_tool
+    arguments   : 传给工具的参数字典
+    timeout     : 单次调用超时秒数
+
+    实现说明
+    不使用 asyncio.run()，因为 FastAPI/uvicorn 运行时已有事件循环，
+    asyncio.run() 会尝试在已有循环中嵌套新循环，导致 TaskGroup 异常。
+    改用 concurrent.futures.ThreadPoolExecutor 在独立线程中运行新事件循环，
+    与主线程的事件循环完全隔离，彻底规避嵌套问题。
+    """
+    if not MCP_AVAILABLE:
+        raise RuntimeError(
+            "MCP 库未安装，请执行：pip install mcp langchain-mcp-adapters"
+        )
+
+    cfg = MCP_SERVER_CONFIGS.get(server_name)
+    if not cfg:
+        raise ValueError(
+            f"MCP 服务器 '{server_name}' 未配置。"
+            f"已配置的服务器：{list(MCP_SERVER_CONFIGS.keys())}"
+        )
+
+    actual_tool = tool_name or cfg["default_tool"]
+    actual_args = arguments or {}
+
+    import concurrent.futures
+
+    def _run_in_new_loop():
+        """在全新的事件循环中运行异步 MCP 调用，与 uvicorn 主循环完全隔离。"""
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(
+                _call_mcp_tool_async(server_name, actual_tool, actual_args, timeout)
+            )
+        finally:
+            loop.close()
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_run_in_new_loop)
+            return future.result(timeout=timeout + 5)
+    except Exception as exc:
+        logger.warning("MCP 调用失败 [%s/%s]：%s", server_name, actual_tool, exc)
+        raise
+
+
+ 
+# 高层封装：Wikipedia 和 Tavily
+ 
+
+def mcp_wikipedia_search(query: str, max_chars: int = 2000) -> List[Dict[str, str]]:
+    """
+    通过 MCP fetch 工具获取 Wikipedia 页面内容。
+    策略：先查中文 Wikipedia，若结果过短再查英文。
+
+    返回
+    ----
+    List[{"title": str, "content": str, "url": str}]
+    """
+    results = []
+
+    zh_url = f"https://zh.wikipedia.org/wiki/{query.replace(' ', '_')}"
+    try:
+        text = call_mcp_tool(
+            "wikipedia",
+            arguments={"url": zh_url, "max_length": max_chars},
+        )
+        if text and len(text.strip()) > 150:
+            results.append({
+                "title": f"Wikipedia（中文）：{query}",
+                "content": text.strip()[:max_chars],
+                "url": zh_url,
+            })
+            logger.info("MCP Wikipedia（中文）检索成功，%d 字符", len(text))
+    except Exception as exc:
+        logger.warning("MCP Wikipedia 中文检索失败：%s", exc)
+
+    if not results:
+        en_url = f"https://en.wikipedia.org/wiki/{query.replace(' ', '_')}"
+        try:
+            text = call_mcp_tool(
+                "wikipedia",
+                arguments={"url": en_url, "max_length": max_chars},
+            )
+            if text and len(text.strip()) > 150:
+                results.append({
+                    "title": f"Wikipedia（英文）：{query}",
+                    "content": text.strip()[:max_chars],
+                    "url": en_url,
+                })
+                logger.info("MCP Wikipedia（英文）检索成功，%d 字符", len(text))
+        except Exception as exc:
+            logger.warning("MCP Wikipedia 英文检索失败：%s", exc)
+
+    return results
+
+
+def mcp_tavily_search(query: str, max_results: int = 3) -> List[Dict[str, str]]:
+    """
+    通过 MCP Tavily 工具进行实时联网搜索。
+
+    返回
+    ----
+    List[{"title": str, "content": str, "url": str}]
+    """
+    try:
+        raw = call_mcp_tool(
+            "tavily",
+            arguments={
+                "query": query,
+                "max_results": max_results,
+                "search_depth": "advanced",
+            },
+        )
+
+        results = []
+        try:
+            parsed = json.loads(raw)
+            items = parsed if isinstance(parsed, list) else parsed.get("results", [])
+            for item in items[:max_results]:
+                content = item.get("content") or item.get("text") or ""
+                if len(content.strip()) > 50:
+                    results.append({
+                        "title": item.get("title", ""),
+                        "content": content.strip(),
+                        "url": item.get("url", ""),
+                    })
+        except (json.JSONDecodeError, AttributeError):
+            if raw and len(raw.strip()) > 50:
+                results.append({
+                    "title": f"Tavily 搜索：{query}",
+                    "content": raw.strip(),
+                    "url": "",
+                })
+
+        logger.info("MCP Tavily 检索成功，%d 条结果", len(results))
+        return results
+
+    except Exception as exc:
+        logger.warning("MCP Tavily 检索失败：%s", exc)
+        raise
+
+
+def mcp_pubmed_search(query: str, max_results: int = 3) -> List[Dict[str, str]]:
+    """
+    通过 MCP PubMed 工具检索医学文献（需启用 MCP_PUBMED_ENABLED=true）。
+
+    包名：@cyanheads/pubmed-mcp-server
+    工具名：pubmed_search_articles（参数：query: str）
+
+    返回
+    ----
+    List[{"title": str, "content": str, "url": str}]
+    """
+    try:
+        raw = call_mcp_tool(
+            "pubmed",
+            tool_name="pubmed_search_articles",
+            arguments={"query": query, "maxResults": max_results, "summaryCount": max_results},
+        )
+        results = []
+        try:
+            parsed = json.loads(raw)
+            items = parsed if isinstance(parsed, list) else [parsed]
+            for item in items[:max_results]:
+                content = item.get("abstract") or item.get("content") or str(item)
+                if len(content.strip()) > 50:
+                    results.append({
+                        "title": item.get("title", "PubMed 文献"),
+                        "content": content.strip(),
+                        "url": item.get("url", ""),
+                    })
+        except (json.JSONDecodeError, AttributeError):
+            if raw and len(raw.strip()) > 50:
+                results.append({
+                    "title": f"PubMed：{query}",
+                    "content": raw.strip(),
+                    "url": "",
+                })
+        logger.info("MCP PubMed 检索成功，%d 条文献", len(results))
+        return results
+    except Exception as exc:
+        logger.warning("MCP PubMed 检索失败：%s", exc)
+        raise
+
+
+ 
+# 状态查询（供健康检查端点使用）
+ 
+
+def get_mcp_status() -> Dict[str, Any]:
+    """返回当前 MCP 配置状态。"""
+    return {
+        "mcp_available":        MCP_AVAILABLE,
+        "configured_servers":   list(MCP_SERVER_CONFIGS.keys()),
+        "tavily_configured":    "tavily"    in MCP_SERVER_CONFIGS,
+        "wikipedia_configured": "wikipedia" in MCP_SERVER_CONFIGS,
+        "pubmed_configured":    "pubmed"    in MCP_SERVER_CONFIGS,
+    }
