@@ -28,8 +28,8 @@ def setup():
         subprocess.run(["npm", "install"], cwd="frontend", shell=True)
 
 def wait_for_api():
-    print(f"等待后端启动，端口 {BACKEND_PORT}…")
-    for _ in range(60):
+    print(f"等待后端启动，端口 {BACKEND_PORT}（首次启动需加载模型和向量库）…")
+    for _ in range(300):
         try:
             if urllib.request.urlopen(f"{BACKEND_URL}/api/v1/health").status == 200:
                 print("后端就绪！")

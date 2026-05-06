@@ -71,7 +71,7 @@ async def _warmup_llm():
         logger.warning("LLM 客户端预热失败（不影响启动）：%s", exc)
 
 
-# ── 生命周期 ───────────────────────────────────────────────────────────────────
+#  生命周期 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用启动与关闭生命周期管理。"""
@@ -84,7 +84,7 @@ async def lifespan(app: FastAPI):
     db_service.init_db()
     logger.info("数据库已初始化：%s", CHAT_DB_PATH)
 
-    # ── 向量库初始化：已有数据则跳过 PDF 处理 ──────────────────────────────
+    #  向量库初始化：已有数据则跳过 PDF 处理 
     if _vector_store_exists():
         logger.info("向量库已存在，跳过 PDF 处理，直接加载…")
         get_or_create_vectorstore()
@@ -99,7 +99,7 @@ async def lifespan(app: FastAPI):
 
     chat_service.initialize_workflow()
 
-    # ── 后台预热：Reranker + LLM 客户端（不阻塞端口监听） ──────────────────
+    #  后台预热：Reranker + LLM 客户端（不阻塞端口监听） 
     asyncio.create_task(_warmup_reranker())
     asyncio.create_task(_warmup_llm())
 
@@ -110,7 +110,7 @@ async def lifespan(app: FastAPI):
     logger.info("MedicalAI 系统关闭中…")
 
 
-# ── FastAPI 应用 ───────────────────────────────────────────────────────────────
+#  FastAPI 应用 
 app = FastAPI(
     title="MedicalAI API",
     description="AI 驱动的医疗问诊系统 — 深度模块化多智能体架构",
@@ -131,7 +131,18 @@ app.add_middleware(SessionMiddleware, secret_key=secrets.token_hex(32))
 app.include_router(api_router)
 
 
-# ── 入口 ───────────────────────────────────────────────────────────────────────
+#  根路径 
+@app.get("/", include_in_schema=False)
+async def root():
+    return {
+        "service": "MedicalAI API",
+        "version": "2.0.0",
+        "docs": "/docs",
+        "health": "/api/v1/health",
+    }
+
+
+#  入口 
 if __name__ == "__main__":
     import uvicorn
 
