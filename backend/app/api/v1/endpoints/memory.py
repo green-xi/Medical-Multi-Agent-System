@@ -20,7 +20,7 @@ def _get_session_id(request: Request) -> str:
     return request.session["session_id"]
 
 
-# ── 查询 ──────────────────────────────────────────────────────────────────────
+#  查询 
 
 @router.get("/memory", summary="查看当前会话的长期记忆")
 async def get_memory(req: Request):
@@ -54,7 +54,7 @@ async def get_profile(req: Request):
     return {"session_id": session_id, "profile": profile, "success": True}
 
 
-# ── 手动写入 ──────────────────────────────────────────────────────────────────
+#  手动写入 
 
 class MemoryUpsertRequest(BaseModel):
     memory_type: str = Field(
@@ -89,7 +89,7 @@ async def upsert_memory(req: Request, body: MemoryUpsertRequest):
     }
 
 
-# ── 清除 ──────────────────────────────────────────────────────────────────────
+#  清除 
 
 @router.delete("/memory", summary="清除当前会话的全部长期记忆")
 async def clear_memory(req: Request):
