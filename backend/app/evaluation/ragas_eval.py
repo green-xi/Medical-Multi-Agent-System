@@ -24,7 +24,7 @@ except ImportError:
     except ImportError:
         pass  # 使用下方内置 SAMPLE_DATASET
 
-# ── 内置医疗领域样例数据集 ──────────────────────────────────────────────────────
+#  内置医疗领域样例数据集 
 # 每条样本包含：question（问题）、answer（生成回答）、
 # contexts（检索到的上下文列表）、ground_truth（标准参考答案）
 SAMPLE_DATASET: List[Dict[str, Any]] = [
@@ -157,7 +157,7 @@ SAMPLE_DATASET: List[Dict[str, Any]] = [
 ]
 
 
-# ── 评估运行器 ─────────────────────────────────────────────────────────────────
+#  评估运行器 
 
 class RagasEvaluator:
     """
@@ -173,7 +173,7 @@ class RagasEvaluator:
         self._llm = None
         self._embeddings = None
 
-    # ── 私有：构建 LLM 与 Embeddings ─────────────────────────────────────────
+    #  私有：构建 LLM 与 Embeddings 
 
     def _build_llm(self):
         """构建 Ragas 评估所用的 LLM 裁判。"""
@@ -236,7 +236,7 @@ class RagasEvaluator:
 
         return self._embeddings
 
-    # ── 公开：评估接口 ────────────────────────────────────────────────────────
+    #  公开：评估接口 
 
     def build_dataset(
         self, samples: Optional[List[Dict[str, Any]]] = None
@@ -278,7 +278,7 @@ class RagasEvaluator:
         logger.info("开始 Ragas RAG 质量评估…")
         dataset = self.build_dataset(samples)
 
-        # ── 构建 ragas LLM / Embeddings 包装器（兼容 ragas v0.1 / v0.2+）──────
+        #  构建 ragas LLM / Embeddings 包装器（兼容 ragas v0.1 / v0.2+）
         # ragas v0.2 起：
         #   1. 指标必须是实例化对象 Faithfulness()，不能用模块级单例
         #   2. LangchainLLMWrapper / LangchainEmbeddingsWrapper 已废弃
@@ -313,7 +313,7 @@ class RagasEvaluator:
             ragas_llm = langchain_llm
             ragas_emb = langchain_emb
 
-        # ── 指标初始化：统一使用旧版模块级单例 API ────────────────────────────
+        #  指标初始化：统一使用旧版模块级单例 API 
         #
         # ragas v0.2 引入了 collections 子包（大写类名 Faithfulness() 等），
         # 但这些新类的 _validate_llm() 只接受 ragas 自己的 InstructorLLM，
@@ -349,12 +349,12 @@ class RagasEvaluator:
                 m.embeddings = ragas_emb
         logger.debug("Ragas 指标：旧版单例 API（兼容 DashScope LangchainLLMWrapper）")
 
-        # ── 执行评估 ───────────────────────────────────────────────────────────
+        #  执行评估 
         # ragas v0.2+ evaluate() 通过指标对象上的 llm/embeddings 属性获取模型，
         # 无需再向 evaluate() 传递 llm= / embeddings= 关键字参数。
         result = evaluate(dataset, metrics=metrics)
 
-        # ── 提取汇总得分（兼容 ragas v0.1 dict 与 v0.2+ EvaluationResult）────
+        #  提取汇总得分（兼容 ragas v0.1 dict 与 v0.2+ EvaluationResult）
         # ragas v0.2 起 evaluate() 返回 EvaluationResult 对象，没有 .items()，
         # 需通过 ._scores_dict / .scores / to_pandas() 等方式获取数值。
         scores: Dict[str, float] = {}
@@ -394,7 +394,7 @@ class RagasEvaluator:
         return scores
 
   
-    # ──历史基线（每次跑完后手动或自动更新）
+    # 历史基线（每次跑完后手动或自动更新）
     # 格式：{"日期": {"faithfulness": x, "answer_relevancy": x, ...}}
     # 用途：与当前得分对比，直观展示 Prompt 调优是否有效
     SCORE_HISTORY: List[Dict[str, Any]] = [
@@ -437,7 +437,7 @@ class RagasEvaluator:
         print(f"  评估时间：{now_str}")
         print("=" * 62)
 
-        # ── 1. 四项指标 ──────────────────────────────────────────────
+        #  1. 四项指标 
         for key, label in label_map.items():
             score = scores.get(key, 0.0)
             filled = int(score * bar_width)
@@ -460,7 +460,7 @@ class RagasEvaluator:
         print(f"  质量评级：{grade}  {note}")
         print("=" * 62)
 
-        # ── 2. Faithfulness 安全性诊断 ───────────────────────────────
+        #  2. Faithfulness 安全性诊断 
         faith = scores.get("faithfulness", 0.0)
         print("\n  【安全性诊断】Faithfulness 指标解读")
         print(f"  当前 Faithfulness = {faith:.4f}")
@@ -479,7 +479,7 @@ class RagasEvaluator:
             print("          unverifiable，触发重检索补充 contexts")
             print("       3. 检查 eval_dataset.py 中 contexts 是否完整覆盖 answer")
 
-        # ── 3. Prompt 调优效果：与历史基线对比 ──────────────────────
+        #  3. Prompt 调优效果：与历史基线对比 
         if cls.SCORE_HISTORY:
             latest_baseline = cls.SCORE_HISTORY[-1]
             deltas = cls._score_deltas(scores, latest_baseline)
@@ -555,7 +555,7 @@ class RagasEvaluator:
             )
 
 
-# ── FastAPI 端点集成（可选） ────────────────────────────────────────────────────
+#  FastAPI 端点集成（可选） 
 
 def create_eval_router():
     """创建 FastAPI 评估路由（可选挂载到主应用）。"""
@@ -617,7 +617,7 @@ def create_eval_router():
     return eval_router
 
 
-# ── 命令行入口 ─────────────────────────────────────────────────────────────────
+#  命令行入口 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
