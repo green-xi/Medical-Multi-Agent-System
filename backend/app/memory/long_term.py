@@ -12,7 +12,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_upsert
 
 from app.core.logging_config import logger
 
-# ── 提取配置 ───────────────────────────────────────────────────────────────────
+#  提取配置 
 # LLM 需要从对话中尝试提取的字段（key → 中文描述）
 EXTRACT_FIELDS: Dict[str, str] = {
     # 用户画像
@@ -65,7 +65,7 @@ class LongTermMemoryService:
         from app.db.session import SessionLocal
         return SessionLocal()
 
-    # ── 写入 ──────────────────────────────────────────────────────────────────
+    #  写入 
 
     def upsert(
         self,
@@ -121,7 +121,7 @@ class LongTermMemoryService:
                 source_turn=entry.get("source_turn"),
             )
 
-    # ── 读取 ──────────────────────────────────────────────────────────────────
+    #  读取 
 
     def load(
         self,
@@ -178,7 +178,7 @@ class LongTermMemoryService:
             db.commit()
         logger.info("已删除会话 %s 的全部长期记忆", session_id[:8])
 
-    # ── LLM 提取 ──────────────────────────────────────────────────────────────
+    #  LLM 提取 
 
     def extract_and_save(
         self,
@@ -272,7 +272,7 @@ class LongTermMemoryService:
             logger.warning("长期记忆提取失败（JSON 解析错误）：%s", exc)
             return {}
 
-    # ── 格式化为 Prompt 文本 ─────────────────────────────────────────────────
+    #  格式化为 Prompt 文本 
 
     def format_for_prompt(self, session_id: str) -> str:
         """
