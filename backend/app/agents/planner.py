@@ -226,9 +226,9 @@ def PlannerAgent(state: AgentState) -> AgentState:
         return state
 
     if not is_evaluating:
-        # ══════════════════════════════════
+         
         # 阶段一：初始规划（制定执行路径）
-        # ══════════════════════════════════
+         
         question = state["question"].strip()
 
         decision: RouteDecision | None = None
@@ -262,9 +262,9 @@ def PlannerAgent(state: AgentState) -> AgentState:
         )
 
     else:
-        # ══════════════════════════════════════════
+         
         # 阶段二：执行结果评估 + 可能的 Replan
-        # ══════════════════════════════════════════
+         
         question = state.get("original_question") or state["question"]
         generation = state.get("generation", "")
 
