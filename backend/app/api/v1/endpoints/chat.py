@@ -57,26 +57,6 @@ async def chat_endpoint(request: ChatRequest, req: Request):
 
 @router.post("/chat/stream", summary="流式返回 AI 思考进度（SSE）")
 async def chat_stream_endpoint(request: ChatRequest, req: Request):
-    """
-    SSE 流式端点，在工作流执行过程中实时推送节点进度。
-    事件类型
-    --------
-    progress  : 节点开始/完成时推送用户可见的进度文字
-                {"step": " 理解并优化问题…", "node": "query_rewriter"}
-    thinking  : QueryRewriter 完成后推送意图分析结果（用于前端"查询优化"面板）
-                {"thinking_steps": [...], "query_intent": "...", "original_question": "..."}
-    done      : 工作流完成，推送完整结果（同 /chat 的 response body）
-    error     : 发生异常时推送错误信息
-
-    前端使用方式
-    ------------
-    const source = new EventSource('/api/v1/chat/stream', {...});
-    source.addEventListener('progress', e => showProgress(JSON.parse(e.data)));
-    source.addEventListener('thinking', e => updateThinkingPanel(JSON.parse(e.data)));
-    source.addEventListener('done',     e => { renderAnswer(JSON.parse(e.data)); source.close(); });
-    source.addEventListener('error',    e => { showError(JSON.parse(e.data)); source.close(); });
-
-    """
     if not chat_service.workflow_app:
         raise HTTPException(status_code=503, detail="系统尚未初始化，请稍后重试")
 
