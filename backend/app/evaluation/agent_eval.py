@@ -36,9 +36,9 @@ def _compat_import(module_path: str):
     return importlib.import_module(module_path)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # 工具函数
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 def _contains_any(text: str, patterns: List[str]) -> bool:
     return any(p in text for p in patterns)
@@ -56,9 +56,9 @@ def _colorize(text: str, passed: bool) -> str:
     return f"{GREEN if passed else RED}{text}{RESET}"
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # 1. Agent 编排行为评估
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 class AgentBehaviorEvaluator:
     """
@@ -170,7 +170,7 @@ class AgentBehaviorEvaluator:
                 loop = asyncio.get_event_loop()
                 api_result = loop.run_until_complete(coro)
 
-            # ── 映射 process_message 返回值 → 评估框架字段 ──────────────
+            #  映射 process_message 返回值 → 评估框架字段 
             # process_message 返回：
             #   {response, query_intent, tool_trace, source, success, ...}
             tool_trace = api_result.get("tool_trace", [])
@@ -222,7 +222,7 @@ class AgentBehaviorEvaluator:
         answer = state.get("generation", "")
         intent = state.get("query_intent", "")
 
-        # ── 各维度判断 ────────────────────────────────────────────────────
+        #  各维度判断 
         intent_ok = (intent == case["expected_intent"])
 
         rag_hit = metrics.get("rag_hit", False)
@@ -335,9 +335,9 @@ class AgentBehaviorEvaluator:
         print("=" * 65 + "\n")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # 2. CriticAgent 单元评估
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 class CriticUnitEvaluator:
     """
@@ -529,9 +529,9 @@ class CriticUnitEvaluator:
         print("=" * 65 + "\n")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # 命令行入口
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
