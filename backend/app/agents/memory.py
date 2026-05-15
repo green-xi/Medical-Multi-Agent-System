@@ -1,18 +1,4 @@
 """短期记忆压缩 + 长期记忆注入与更新。"""
-"""
-每轮执行两个阶段：
-
-  Phase 1 — 短期记忆维护
-    · 对话历史超过阈值时，LLM 压缩早期内容为摘要
-    · 保留最近 N 轮完整对话 + 1 条摘要系统消息
-
-  Phase 2 — 长期记忆读取 & 注入
-    · 从数据库加载该 session 的用户画像与医疗事实
-    · 格式化后写入 state["long_term_context"]，供 Executor 注入提示词
-
-  Phase 3 — 长期记忆更新（异步，上轮对话提取）
-    · 对上一轮 Q&A 提取结构化医疗信息（非阻塞，失败不影响主流程）
-"""
 
 from time import perf_counter
 from typing import Optional
