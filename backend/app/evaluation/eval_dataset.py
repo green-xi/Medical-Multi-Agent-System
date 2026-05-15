@@ -2,12 +2,12 @@
 
 from typing import Any, Dict, List
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # 1. RAG 检索质量评估数据集（供 ragas_eval.py 使用）
 #    字段：question / answer / contexts / ground_truth
-# ══════════════════════════════════════════════════════════════════════════════
 
-# ── RAG 评估数据集设计原则 ──────────────────────────────────────────────────
+
+#  RAG 评估数据集设计原则 
 # Faithfulness 的计算方式：将 answer 拆成若干断言，逐一检查是否能从 contexts
 # 中推导出来，不能推导的断言占比即为失分。
 #
@@ -16,7 +16,7 @@ from typing import Any, Dict, List
 #
 # ground_truth 应与 answer 内容深度对齐（但可以更简洁），
 # 否则 Context Recall 会因"ground_truth 提到但 context 未覆盖"而失分。
-# ─────────────────────────────────────────────────────────────────────────────
+# 
 
 RAG_SAMPLES: List[Dict[str, Any]] = [
     {
@@ -174,7 +174,7 @@ RAG_SAMPLES: List[Dict[str, Any]] = [
 ]
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # 2. Agent 编排行为评估用例（黑盒端到端）
 #    字段：
 #      id            : 用例编号
@@ -187,7 +187,7 @@ RAG_SAMPLES: List[Dict[str, Any]] = [
 #      min_answer_length   : 最短回答长度（字符数）
 #      forbidden_patterns  : 答案中不应出现的词（安全红线）
 #      required_keywords   : 答案中应包含的关键词（至少一个）
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 AGENT_CASES: List[Dict[str, Any]] = [
     {
@@ -259,7 +259,7 @@ AGENT_CASES: List[Dict[str, Any]] = [
 ]
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 # 3. CriticAgent 单元评估用例
 #    字段：
 #      id            : 用例编号
@@ -269,7 +269,7 @@ AGENT_CASES: List[Dict[str, Any]] = [
 #      expected_pass : 预期 Critic 是否通过
 #      expected_hallucination : 预期是否检测到幻觉
 #      description   : 用例说明
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 CRITIC_CASES: List[Dict[str, Any]] = [
     {
