@@ -18,10 +18,8 @@ logger = logging.getLogger("medicalai.evaluation.agent")
 
 def _compat_import(module_path: str):
     """
-    兼容两种运行方式的动态导入：
-      - 从 backend/ 目录运行：python -m app.evaluation.agent_eval
-      - 从项目根目录运行：python -m backend.app.evaluation.agent_eval
-      - 导入前把 backend/ 的绝对路径注入 sys.path（幂等）。
+    从项目根目录运行时，sys.path 只有项目根，没有 backend/ 目录，导致所有 app.xxx 导入失败。
+    解决方案：导入前把 backend/ 的绝对路径注入 sys.path（幂等）。
     """
     import importlib
     import sys
@@ -36,10 +34,7 @@ def _compat_import(module_path: str):
     return importlib.import_module(module_path)
 
 
-
 # 工具函数
-
-
 def _contains_any(text: str, patterns: List[str]) -> bool:
     return any(p in text for p in patterns)
 
@@ -56,21 +51,17 @@ def _colorize(text: str, passed: bool) -> str:
     return f"{GREEN if passed else RED}{text}{RESET}"
 
 
-
 # 1. Agent 编排行为评估
-
 
 class AgentBehaviorEvaluator:
     """
     对 Agent 工作流进行端到端黑盒评估。
 
-    两种模式
-    --------
+    两种模式：
     mock=True  : 不调用真实 LLM/API，用预设状态数据测试评估逻辑本身
     mock=False : 调用真实工作流（需要配置 API Key）
 
-    评估指标
-    --------
+    评估指标:
     - intent_accuracy       意图识别准确率（QueryRewriter）
     - rag_hit_rate          RAG 命中率
     - tavily_trigger_rate   Tavily 触发率（联网检索）
@@ -127,10 +118,7 @@ class AgentBehaviorEvaluator:
         """
         真实调用工作流（需要 API Key 和完整环境）。
 
-        sys.path 修复
-        -------------
-        从项目根目录以 python -m backend.app.evaluation.agent_eval 运行时，
-        sys.path 里只有项目根目录，没有 backend/ 目录，导致所有 app.xxx 导入失败。
+        从项目根目录以 python -m backend.app.evaluation.agent_eval 运行时，sys.path 里只有项目根目录，没有 backend/ 目录，导致所有 app.xxx 导入失败。
         解决方案：在调用前动态把 backend/ 的绝对路径加入 sys.path。
         """
         import asyncio
@@ -310,7 +298,7 @@ class AgentBehaviorEvaluator:
     def _print_report(summary: Dict[str, Any]) -> None:
         """打印 Agent 行为评估报告。"""
         print("\n" + "=" * 65)
-        print("  Agent 编排行为评估报告")
+        print("  MedicalAI — Agent 编排行为评估报告")
         print(f"  评估时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print("=" * 65)
         print(f"  用例总数：{summary['total']}　通过：{summary['passed']}　通过率：{summary['pass_rate']:.1%}")
@@ -343,13 +331,11 @@ class CriticUnitEvaluator:
     """
     对 CriticAgent 进行单元级评估。
 
-    评估方式
-    --------
+    评估方式：
     直接调用 CriticAgent 函数（传入构造好的 AgentState），
     对比预期通过/不通过与实际结果。
 
-    核心指标
-    --------
+    核心指标：
     - true_positive_rate  : 应通过的答案被正确放行的比例
     - true_negative_rate  : 应拦截的答案被正确拦截的比例
     - hallucination_accuracy : 幻觉检测准确率
@@ -505,7 +491,7 @@ class CriticUnitEvaluator:
     def _print_report(summary: Dict[str, Any]) -> None:
         """打印 CriticAgent 单元评估报告。"""
         print("\n" + "=" * 65)
-        print("  CriticAgent 单元评估报告")
+        print("  MedicalAI — CriticAgent 单元评估报告")
         print(f"  评估时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print("=" * 65)
         print(f"  用例总数：{summary['total']}")
@@ -529,13 +515,11 @@ class CriticUnitEvaluator:
         print("=" * 65 + "\n")
 
 
-
 # 命令行入口
-
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Agent 行为 & CriticAgent 单元评估工具",
+        description="MedicalAI — Agent 行为 & CriticAgent 单元评估工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例：
