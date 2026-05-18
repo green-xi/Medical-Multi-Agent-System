@@ -78,6 +78,8 @@ class ChatService:
             self._touch_session(session_id, state)
             return state
 
+        #  内存中没有该 session（首次加载或后端重启后）
+        # 从数据库恢复对话历史，确保重启后上下文不丢失
         state = initialize_conversation_state(session_id=session_id)
         try:
             db_rows = db_service.get_chat_history(session_id)
@@ -146,7 +148,7 @@ class ChatService:
         logger.info("处理会话 %s 的消息…", session_id[:8])
 
         if not self.workflow_app:
-            raise ValueError("工作流未初始化")
+            raise ValueError("工作流未初始化 (Workflow not initialized)")
 
         session_lock = self._get_session_lock(session_id)
         async with session_lock:
@@ -157,6 +159,7 @@ class ChatService:
             state = self._get_or_create_session_state(session_id)
             state = reset_query_state(state)
             state["question"] = message
+            # 确保 session_id 在 state 中始终正确
             state["session_id"] = session_id
 
             try:
@@ -185,20 +188,34 @@ class ChatService:
                 len(result.get("fallback_events", [])),
             )
 
+            rag_think_log    = result.get("rag_think_log", [])
+            thinking_steps   = result.get("thinking_steps", [])
+            tool_trace       = result.get("tool_trace", [])
+            query_intent     = result.get("query_intent", "")
+            original_question = result.get("original_question", "")
+
             return {
                 "response": response_text,
                 "source": source,
                 "timestamp": datetime.now().strftime("%H:%M"),
                 "success": bool(result.get("generation")),
                 "session_id": session_id,
-                "thinking_steps":   result.get("thinking_steps", []),
-                "original_question": result.get("original_question", ""),
-                "query_intent":      result.get("query_intent", ""),
-                "rag_think_log":     result.get("rag_think_log", []),
-                "tool_trace":        result.get("tool_trace", []),
+                "thinking": {
+                    "rag_think_log":    rag_think_log,
+                    "thinking_steps":   thinking_steps,
+                    "tool_trace":       tool_trace,
+                    "query_intent":     query_intent,
+                    "original_question": original_question,
+                },
+                "thinking_steps":    thinking_steps,
+                "original_question": original_question,
+                "query_intent":      query_intent,
+                "rag_think_log":     rag_think_log,
+                "tool_trace":        tool_trace,
             }
 
     def clear_conversation(self, session_id: str) -> None:
+        """清空内存对话状态（保留长期记忆）。"""
         if session_id in self.conversation_states:
             self._touch_session(session_id, initialize_conversation_state(session_id=session_id))
             logger.info("已清空会话 %s 的对话历史（长期记忆保留）", session_id[:8])
