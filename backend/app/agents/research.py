@@ -1,4 +1,5 @@
-"""ResearchAgent：ReAct 循环检索 Agent，整合 RAG、工具查询、Wikipedia、Tavily。"""
+"""ResearchAgent：自适应检索 Agent，整合 RAG、工具查询、Wikipedia、Tavily。"""
+
 
 from __future__ import annotations
 
@@ -15,18 +16,17 @@ from app.core.logging_config import logger
 from app.core.state import AgentState, append_tool_trace, record_fallback, set_node_latency
 from app.core.config import MCP_ENABLED
 from app.tools.llm_client import get_llm
-from app.tools.mcp_client import MCP_AVAILABLE, mcp_tavily_search, mcp_wikipedia_search
+from app.tools.mcp_client import MCP_AVAILABLE, MCP_TOOL_PARAMS, call_mcp_tool_dynamic, get_discovered_tools
 from app.tools.reranker import rerank_documents
 from app.tools.vector_store import get_retriever
-from app.tools.wikipedia_search import get_wikipedia_wrapper
-from app.tools.tavily_search import get_tavily_search
 
 MAX_ITER = 3  # ReAct 最大迭代轮数
 
 
-# 工具注册表（供 LLM THINK 阶段参考）
 
-TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
+# 本地工具注册表（非 MCP 工具，用于 tool_query action）
+# MCP 工具由 load_mcp_tools_sync() 动态发现，不在此注册
+LOCAL_TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
     "get_weather": {
         "description": "根据城市名查询当前天气，用于判断气象性头痛、过敏、关节痛等是否与天气相关。",
         "keywords": ["天气", "气温", "下雨", "下雪", "湿度", "花粉", "气压", "晴", "阴"],
@@ -41,11 +41,6 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "keywords": ["是什么意思", "什么是", "解释", "报告", "化验", "指标",
                      "偏高", "偏低", "正常值", "ct", "mri", "b超", "血常规"],
     },
-    # 　 新增工具示例（只需在此处添加描述，并在 ACTION_REGISTRY 注册实现） 　
-    # "medical_image_analysis": {
-    #     "description": "分析医学影像（CT/MRI/X-ray）报告文本，解读关键发现。",
-    #     "keywords": ["CT报告", "MRI报告", "X光", "影像", "病灶", "结节"],
-    # },
 }
 
 CITY_COORDS: Dict[str, Dict[str, float]] = {
@@ -85,7 +80,7 @@ DRUG_DICT = {
         "side_effects": "腹泻、皮疹、过敏反应（严重时过敏性休克）",
         "warnings": "青霉素过敏者禁用；使用前需皮试；完成整个疗程，不可擅自停药",
     },
-    # 　 从原版迁移的额外药品 　　　　　　
+    #  从原版迁移的额外药品 
     "阿司匹林": {
         "name": "阿司匹林（Aspirin）", "category": "非甾体抗炎药 / 抗血小板药",
         "indications": "退烧镇痛（大剂量）、心脑血管疾病预防（小剂量）",
@@ -116,7 +111,7 @@ DRUG_DICT = {
     },
 }
 
-# 　 医学术语词库（从原版迁移，替代 _explain_medical_term 内的硬编码 dict） 　
+#  医学术语词库（从原版迁移，替代 _explain_medical_term 内的硬编码 dict） 
 MEDICAL_TERMS: Dict[str, str] = {
     "肌酐": "肌酐是肌肉代谢产物，通过肾脏过滤排出。血肌酐偏高提示肾脏过滤功能下降，需结合 eGFR 等指标综合判断。",
     "空腹血糖": "空腹血糖正常值为 3.9-6.1 mmol/L。6.1-7.0 为糖尿病前期，≥7.0 提示糖尿病（需复查确认）。",
@@ -135,9 +130,7 @@ MEDICAL_TERMS: Dict[str, str] = {
 }
 
 
-　
 # 策略模式核心：ActionContext + ActionResult + ACTION_REGISTRY
-　
 
 @dataclass
 class ActionContext:
@@ -336,11 +329,9 @@ def _search_drug(query: str) -> str:
     # 本地词库未命中：MCP Tavily 联网兜底
     if MCP_ENABLED and MCP_AVAILABLE:
         try:
-            results = mcp_tavily_search(
-                query=f"{query} 药品 说明书 用法 副作用", max_results=2
-            )
+            results = _run_mcp_tool_query("tavily", f"{query} 药品 说明书 用法 副作用")
             if results:
-                parts = [f"【{r['title']}】{r['content'][:500]}" for r in results]
+                parts = [f"【{d.metadata.get('title', '')}】{d.page_content[:500]}" for d in results]
                 return (
                     "（本地数据库未收录，以下为联网检索结果）\n\n"
                     + "\n\n".join(parts)
@@ -359,15 +350,14 @@ def _explain_medical_term(query: str) -> str:
     # 本地词库未命中：MCP Tavily 联网兜底
     if MCP_ENABLED and MCP_AVAILABLE:
         try:
-            results = mcp_tavily_search(
-                query=f"{query} 医学术语 解释 临床意义", max_results=2
-            )
+            results = _run_mcp_tool_query("tavily", f"{query} 医学术语 解释 临床意义")
             if results:
-                parts = [f"【{r['title']}】{r['content'][:500]}" for r in results]
+                parts = [f"【{d.metadata.get('title', '')}】{d.page_content[:500]}" for d in results]
                 return "（本地词库未收录，以下为联网检索结果）\n\n" + "\n\n".join(parts)
         except Exception as exc:
             logger.debug("MCP 术语兜底检索失败：%s", exc)
     return f'"{query}"是一个医学专业术语，建议结合检查报告向主治医生咨询。'
+
 
 
 # 策略实现（每种 action 一个独立函数）
@@ -484,9 +474,9 @@ def act_tool_query(ctx: ActionContext) -> ActionResult:
     tool_name = parts[0].strip()
     tool_param = parts[1].strip() if len(parts) > 1 else ctx.question
 
-    if tool_name not in TOOL_REGISTRY:
+    if tool_name not in LOCAL_TOOL_REGISTRY:
         record_fallback(ctx.state, f"unknown_tool:{tool_name}")
-        logger.warning("act_tool_query: 工具 %s 未注册，可用：%s", tool_name, list(TOOL_REGISTRY))
+        logger.warning("act_tool_query: 工具 %s 未注册，可用：%s", tool_name, list(LOCAL_TOOL_REGISTRY))
         return ActionResult(success=False, fallback_key=f"unknown_tool:{tool_name}")
 
     tool_result = _run_tool(tool_name, tool_param)
@@ -501,15 +491,10 @@ def act_tool_query(ctx: ActionContext) -> ActionResult:
 
     if is_fail and not _has_good_docs:
         logger.info("act_tool_query: %s 失败，自动兜底→Tavily", tool_name)
-        tavily_result = act_tavily(ActionContext(
-            param=tool_param, question=ctx.question, state=ctx.state,
-            docs=ctx.docs, iteration=ctx.iteration,
-            history_context=ctx.history_context,
-            long_term_prefix=ctx.long_term_prefix, llm=ctx.llm,
-        ))
-        if tavily_result.success:
+        tavily_result = _run_mcp_tool_query("tavily", tool_param)
+        if tavily_result:
             return ActionResult(
-                new_docs=tavily_result.new_docs,
+                new_docs=tavily_result,
                 tool_result=tool_result,  # 保留失败结果，答案生成时会忽略
                 success=True,
                 source="实时医学搜索（工具失败兜底）",
@@ -521,109 +506,100 @@ def act_tool_query(ctx: ActionContext) -> ActionResult:
     )
 
 
-@register_action("wikipedia")
-def act_wikipedia(ctx: ActionContext) -> ActionResult:
-    """Wikipedia 医学知识检索。MCP 优先 → LangChain wrapper 降级。"""
-    ctx.state["wiki_attempted"] = True
+def _run_mcp_tool_query(server_name: str, query: str) -> List[Document]:
+    """
+    调用 MCP 工具并返回 Document 列表。
+    使用 MCP_TOOL_PARAMS 构造参数，支持 tavily 和 wikipedia。
+    失败时返回空列表。
+    """
+    if not MCP_ENABLED or not MCP_AVAILABLE:
+        return []
 
-    # 通道 1：MCP（低延迟，连接池复用）
-    if MCP_ENABLED and MCP_AVAILABLE:
-        try:
-            mcp_results = mcp_wikipedia_search(ctx.param)
-            if mcp_results:
-                existing_titles = {d.metadata.get("title", "") for d in ctx.docs}
-                new_docs = [
-                    Document(
-                        page_content=r["content"],
-                        metadata={"url": r.get("url", ""), "title": r["title"]},
-                    )
-                    for r in mcp_results
-                    if r["title"] not in existing_titles
-                ]
-                ctx.state["wiki_success"] = True
-                ctx.state["source"] = "Wikipedia 医学资料"
-                logger.info("act_wikipedia [MCP]: 成功 %d 条", len(mcp_results))
-                return ActionResult(new_docs=new_docs, success=True, source="Wikipedia 医学资料")
-        except Exception as exc:
-            logger.debug("MCP Wikipedia 失败，降级到 LangChain wrapper：%s", exc)
+    param_builder = MCP_TOOL_PARAMS.get(server_name)
+    if not param_builder:
+        logger.warning("_run_mcp_tool_query: 未知 MCP 服务器 %s", server_name)
+        return []
 
-    # 通道 2：LangChain wrapper
-    wiki = get_wikipedia_wrapper()
-    if not wiki:
-        return ActionResult(success=False, fallback_key="wikipedia_not_available")
+    cfg = _mcp_tool_cfg(server_name)
+    if not cfg:
+        return []
 
     try:
-        content = wiki.run(f"{ctx.param} 医学 症状 治疗")
-        if content and len(content.strip()) > 100:
-            ctx.state["wiki_success"] = True
-            ctx.state["source"] = "Wikipedia 医学资料"
-            logger.info("act_wikipedia [LangChain]: 检索成功 %d 字符", len(content))
-            return ActionResult(new_docs=[Document(page_content=content)], success=True, source="Wikipedia 医学资料")
-
-        ctx.state["wiki_success"] = False
-        record_fallback(ctx.state, f"wiki_empty_iter{ctx.iteration}")
-        return ActionResult(success=False, fallback_key=f"wiki_empty_iter{ctx.iteration}")
+        raw = call_mcp_tool_dynamic(
+            server_name=server_name,
+            tool_name=cfg["default_tool"],
+            arguments=param_builder(query),
+        )
     except Exception as exc:
-        logger.error("act_wikipedia [LangChain]: 检索异常 %s", exc)
-        record_fallback(ctx.state, f"wiki_exception:{exc}")
-        return ActionResult(success=False, fallback_key=f"wiki_exception:{exc}")
+        logger.debug("MCP %s 检索失败：%s", server_name, exc)
+        return []
 
+    if not raw or len(raw.strip()) < 50:
+        return []
 
-@register_action("tavily")
-def act_tavily(ctx: ActionContext) -> ActionResult:
-    """Tavily 联网搜索（最终兜底）。MCP 优先 → LangChain wrapper 降级。"""
-    ctx.state["tavily_attempted"] = True
-
-    # 通道 1：MCP
-    if MCP_ENABLED and MCP_AVAILABLE:
+    # Tavily 返回 JSON，Wikipedia (fetch) 返回纯文本
+    docs: List[Document] = []
+    if server_name == "tavily":
         try:
-            mcp_results = mcp_tavily_search(ctx.param, max_results=3)
-            if mcp_results:
-                new_docs = [
-                    Document(
-                        page_content=r["content"],
-                        metadata={"url": r.get("url", ""), "title": r.get("title", "")},
-                    )
-                    for r in mcp_results
-                ]
-                ctx.state["tavily_success"] = True
-                ctx.state["source"] = "实时医学搜索"
-                logger.info("act_tavily [MCP]: 成功 %d 条", len(mcp_results))
-                return ActionResult(new_docs=new_docs, success=True, source="实时医学搜索")
-        except Exception as exc:
-            logger.debug("MCP Tavily 失败，降级到 LangChain wrapper：%s", exc)
+            parsed = json.loads(raw)
+            items = parsed if isinstance(parsed, list) else parsed.get("results", [])
+            for item in items:
+                content = item.get("content") or item.get("text", "")
+                if len(content.strip()) > 50:
+                    docs.append(Document(
+                        page_content=content.strip(),
+                        metadata={"url": item.get("url", ""), "title": item.get("title", "")},
+                    ))
+        except (json.JSONDecodeError, AttributeError):
+            docs.append(Document(page_content=raw.strip()))
+    else:
+        # wikipedia/fetch 返回 markdown 文本
+        docs.append(Document(
+            page_content=raw.strip(),
+            metadata={"title": f"Wikipedia（中文）：{query}"},
+        ))
 
-    # 通道 2：LangChain wrapper
-    tavily = get_tavily_search()
-    if not tavily:
-        return ActionResult(success=False, fallback_key="tavily_not_available")
+    return docs
 
-    try:
-        results = tavily.invoke(ctx.param)
-        valid = [
-            r for r in (results or [])
-            if isinstance(r, dict) and len(r.get("content", "")) > 50
-        ]
-        if valid:
-            new_docs = [
-                Document(
-                    page_content=r["content"],
-                    metadata={"url": r.get("url", ""), "title": r.get("title", "")},
-                )
-                for r in valid
-            ]
-            ctx.state["tavily_success"] = True
-            ctx.state["source"] = "实时医学搜索"
-            logger.info("act_tavily: 检索成功 %d 条结果", len(valid))
-            return ActionResult(new_docs=new_docs, success=True, source="实时医学搜索")
 
-        ctx.state["tavily_success"] = False
-        record_fallback(ctx.state, f"tavily_empty_iter{ctx.iteration}")
-        return ActionResult(success=False, fallback_key=f"tavily_empty_iter{ctx.iteration}")
-    except Exception as exc:
-        logger.error("act_tavily: 检索异常 %s", exc)
-        record_fallback(ctx.state, f"tavily_exception:{exc}")
-        return ActionResult(success=False, fallback_key=f"tavily_exception:{exc}")
+def _mcp_tool_cfg(server_name: str) -> Optional[Dict]:
+    """从 MCP 发现缓存中获取服务器配置（含 default_tool 等信息）。"""
+    from app.tools.mcp_client import MCP_SERVER_CONFIGS
+    cfg = MCP_SERVER_CONFIGS.get(server_name)
+    if not cfg:
+        return None
+    return {
+        "default_tool": cfg.get("default_tool", ""),
+        "server_name": server_name,
+    }
+
+
+@register_action("mcp_tool")
+def act_mcp_tool(ctx: ActionContext) -> ActionResult:
+    """
+    统一 MCP 工具调度。
+    param 格式：server_name|query
+    例如：tavily|头痛的原因 | wikipedia|感冒
+
+    自动加载 MCP 发现的工具列表，调用对应的 MCP 服务器。
+    """
+    parts = ctx.param.split("|", 1)
+    server_name = parts[0].strip()
+    query = parts[1].strip() if len(parts) > 1 else ctx.question
+
+    new_docs = _run_mcp_tool_query(server_name, query)
+    if new_docs:
+        source_map = {
+            "tavily": "实时医学搜索",
+            "wikipedia": "Wikipedia 医学资料",
+        }
+        source = source_map.get(server_name, server_name)
+        ctx.state[f"{server_name}_success"] = True
+        logger.info("act_mcp_tool [%s]: 成功 %d 条", server_name, len(new_docs))
+        return ActionResult(new_docs=new_docs, success=True, source=source)
+
+    record_fallback(ctx.state, f"mcp_tool_empty_{server_name}_iter{ctx.iteration}")
+    return ActionResult(success=False, fallback_key=f"mcp_tool_empty_{server_name}_iter{ctx.iteration}")
 
 
 @register_action("llm_direct")
@@ -650,15 +626,6 @@ def act_llm_direct(ctx: ActionContext) -> ActionResult:
         source=source,
         success=bool(answer and len(answer) > 10),
     )
-
-
-# 　 新增工具示例（只需添加这个函数 + 注册一行，主循环不需要改任何代码） 　　　
-# @register_action("medical_image_analysis")
-# def act_medical_image_analysis(ctx: ActionContext) -> ActionResult:
-#     """分析医学影像报告文本，提取关键发现。"""
-#     # 调用影像分析服务...
-#     result = image_analysis_service.analyze(ctx.param)
-#     return ActionResult(tool_result=result, success=True)
 
 
 # 主循环辅助：应用 ActionResult 到全局 docs 和 state
@@ -695,11 +662,10 @@ def _apply_result(
     if result.fallback_key:
         record_fallback(state, result.fallback_key)
 
-
 # THINK 阶段：LLM 分析当前信息质量，决定下一步 ACT
 
 _ACT_CHOICES = list(ACTION_REGISTRY.keys()) + ["accept"]
-_TOOLS_DESC = "\n".join(f'  - "{k}": {v["description"]}' for k, v in TOOL_REGISTRY.items())
+_TOOLS_DESC = "\n".join(f'  - "{k}": {v["description"]}' for k, v in LOCAL_TOOL_REGISTRY.items())
 
 
 def _think(
@@ -744,8 +710,9 @@ def _think(
             "如果本轮文档在此基础上有改善且三项均≥6，请直接选择 accept。"
         )
 
-    # 　 无文档时直接 expand_query，不调 LLM 　　　　　
-    if not docs:
+    #  无文档时直接 expand_query，不调 LLM 
+    # 例外：replan_instruction 非空时，即使无文档也需经 LLM 决策（测试 & 实际使用均依赖此行为）
+    if not docs and not replan_instruction:
         return {
             "scores": None,
             "action": "expand_query",
@@ -753,7 +720,7 @@ def _think(
             "reason": "当前无文档，需扩展查询。",
         }
 
-    # 　 硬性 early-exit：rerank_score ≥ 阈值直接 accept，跳过 LLM 　　　
+    #  硬性 early-exit：rerank_score ≥ 阈值直接 accept，跳过 LLM 
     scores = [d.metadata.get("rerank_score", 0.0) for d in docs]
     top_rerank_score = max(scores) if scores else 0.0
 
@@ -811,8 +778,7 @@ def _think(
         "  - decompose：问题复杂，拆解为子问题（param: 子问题，逗号分隔）\n"
         "  - tool_query：需要结构化工具（param: tool_name|查询参数）\n"
         f"    可用工具：\n{_TOOLS_DESC}\n"
-        "  - wikipedia：向量库无相关内容（param: 搜索词）\n"
-        "  - tavily：以上均失败，联网搜索（param: 搜索词）\n"
+        "  - mcp_tool：调用 MCP 外部工具（param: server_name|查询参数，如 tavily|头痛原因）\n"
         "  - llm_direct：通用健康咨询，无需外部文档\n\n"
         "⚠️ 已连续两轮 expand_query 时，必须选 accept 或其他动作，不得三连扩展。\n\n"
         '返回格式：{"relevance": 分数, "coverage": 分数, "medical_depth": 分数, '
@@ -924,7 +890,9 @@ def _generate_answer(
     return "当前服务暂时不可用，如有明显不适请线下就医。", "系统提示"
 
 
+
 # ResearchAgent 主函数（策略模式重构后，ACT 分发仅 5 行）
+
 
 def ResearchAgent(state: AgentState) -> AgentState:
     """
@@ -932,7 +900,6 @@ def ResearchAgent(state: AgentState) -> AgentState:
     通过 THINK-ACT-OBSERVE 循环，自主决定使用哪些工具完成检索任务。
 
     核心变化
-    --------
     原实现：ACT 分发是一个 120 行 if-elif 链，新增工具需在链中插入。
     重构后：ACT 分发 = 3 行（查注册表 → 构造 context → 调策略）。
              新增工具只需实现 ActionFn 并 @register_action 注册，主循环零改动。
@@ -961,13 +928,13 @@ def ResearchAgent(state: AgentState) -> AgentState:
     if lt:
         long_term_prefix = f"以下是该患者的历史档案，请参考：\n{lt}\n\n"
 
-    # 　 初始化本轮状态 　　　　　　　
+    #  初始化本轮状态 
     docs: List[Document] = list(state.get("documents") or [])
     tool_result_holder: List[str] = [""]   # 可变引用包装
     used_actions: List[str] = []
     think_log: List[Dict] = list(state.get("rag_think_log") or [])
 
-    # 　 Planner 路由到 llm_agent，直接跳过检索 　　　　
+    #  Planner 路由到 llm_agent，直接跳过检索 
     if route_tool == "llm_agent" and not replan_instruction:
         ctx = ActionContext(
             param=question, question=question, state=state, docs=docs,
@@ -982,32 +949,37 @@ def ResearchAgent(state: AgentState) -> AgentState:
         logger.info("ResearchAgent [llm_direct] 路径完成")
         return state
 
-    # 　 ReAct 主循环 　　　　　　
+    #  ReAct 主循环 
     prev_scores: Optional[Dict] = None
     for iteration in range(MAX_ITER):
 
         # 最后一轮强制 accept
         if iteration == MAX_ITER - 1 and docs:
+            _r, _c, _m = 7.0, 7.0, 7.0
             think_result = {
-                "relevance": 7.0, "coverage": 7.0, "medical_depth": 7.0,
+                "relevance": _r, "coverage": _c, "medical_depth": _m,
                 "action": "accept", "param": "",
                 "reason": "已达最大迭代轮数，强制退出生成答案。",
                 "iteration": iteration,
+                "scores": {
+                    "relevance": _r, "coverage": _c, "medical_depth": _m,
+                    "overall": round((_r + _c + _m) / 3, 2),
+                },
             }
             think_log.append(think_result)
             logger.info("ResearchAgent THINK [iter=%d] 强制 accept（MAX_ITER）", iteration)
             break
 
-        # 　 盲区强制路由（不依赖 LLM 决策，直接选最优工具） 　　　
+        #  盲区强制路由（不依赖 LLM 决策，直接选最优工具） 
         if (state.get("rag_blind_spot")
-                and "tavily" not in used_actions
-                and "wikipedia" not in used_actions):
+                and "mcp_tool" not in used_actions):
             _WEATHER_KW = ["天气", "气温", "下雨", "下雪", "刮风", "湿度", "降温", "升温"]
             _skip_weather = "get_weather" in replan_instruction
             if (any(kw in question for kw in _WEATHER_KW)
                     and "tool_query" not in used_actions
                     and not _skip_weather):
                 think_result = {
+                    "relevance": 5.0, "coverage": 5.0, "medical_depth": 5.0,
                     "action": "tool_query",
                     "param": f"get_weather|{question}",
                     "reason": f"知识库盲区（score={state.get('rag_blind_score',0):.3f}），天气相关→get_weather。",
@@ -1015,8 +987,9 @@ def ResearchAgent(state: AgentState) -> AgentState:
                 }
             else:
                 think_result = {
-                    "action": "tavily",
-                    "param": question,
+                    "relevance": 5.0, "coverage": 5.0, "medical_depth": 5.0,
+                    "action": "mcp_tool",
+                    "param": f"tavily|{question}",
                     "reason": f"知识库盲区（score={state.get('rag_blind_score',0):.3f}），强制→tavily。",
                     "iteration": iteration,
                 }
@@ -1029,6 +1002,23 @@ def ResearchAgent(state: AgentState) -> AgentState:
             )
 
         think_result["iteration"] = iteration
+        # 标准化 scores 字段：
+        # - LLM 正常决策时返回顶层 relevance/coverage/medical_depth，归入嵌套 dict
+        # - 无文档短路时 relevance=None，也补一个全 None 的嵌套 dict（不能留 None，
+        #   否则测试和前端 entry["scores"].get("overall") 会 AttributeError）
+        r = think_result.get("relevance")
+        c = think_result.get("coverage")
+        m = think_result.get("medical_depth")
+        if r is not None and c is not None and m is not None:
+            overall = think_result.get("overall") or round((r + c + m) / 3, 2)
+        else:
+            overall = None
+        think_result["scores"] = {
+            "relevance":     r,
+            "coverage":      c,
+            "medical_depth": m,
+            "overall":       overall,
+        }
         think_log.append(think_result)
         prev_scores = {
             "relevance": think_result.get("relevance", 5.0),
@@ -1044,7 +1034,7 @@ def ResearchAgent(state: AgentState) -> AgentState:
         )
         used_actions.append(action)
 
-        # 　 ACT：策略模式分发（原 120 行 if-elif → 现在 5 行） 　
+        #  ACT：策略模式分发（原 120 行 if-elif → 现在 5 行） 
         if action == "accept":
             break
 
@@ -1068,7 +1058,7 @@ def ResearchAgent(state: AgentState) -> AgentState:
         )
         result = strategy(ctx)        # 调用策略
 
-        # 　 OBSERVE：处理 exit_loop（llm_direct 等直接退出的策略） 　
+        #  OBSERVE：处理 exit_loop（llm_direct 等直接退出的策略） 
         if result.exit_loop:
             state["generation"] = result.answer
             state["source"] = result.source
@@ -1085,9 +1075,9 @@ def ResearchAgent(state: AgentState) -> AgentState:
             return state
 
         _apply_result(result, docs, state, tool_result_holder)
-        # 　　　　　　　
+        
 
-    # 　 退出循环：生成最终答案 　　　　　
+    #  退出循环：生成最终答案 
     answer, source = _generate_answer(
         question, docs, tool_result_holder[0], history_context, long_term_prefix, llm
     )
