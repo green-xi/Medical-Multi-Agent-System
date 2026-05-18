@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Dict
 
-from sqlalchemy import Column, DateTime, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Column, DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import declarative_base
 
 # 共享同一个 Base，与 Message 模型一起建表
@@ -50,8 +50,8 @@ class UserMemory(Base):
             "session_id", "memory_type", "key",
             name="uq_user_memory_session_type_key",
         ),
-        # 额外建普通索引加速 session_id 查询
-        Index("ix_user_memory_session_id", "session_id"),
+        # session_id 索引已通过 Column(..., index=True) 自动创建（ix_user_memory_session_id）
+        # 不在此处重复定义，避免 create_all 重复执行时报 "index already exists"
     )
 
     def to_dict(self) -> Dict:
