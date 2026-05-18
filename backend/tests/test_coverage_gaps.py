@@ -1,14 +1,6 @@
 """
 test_coverage_gaps.py — 覆盖率补充测试（五 Agent 架构对齐版）
 
-说明：
-  旧架构中的 ExecutorAgent / LLMAgent 已被移除，
-  其职责全部内化至 ResearchAgent（_generate_answer + llm_direct 路径）。
-
-  TestResearchAgentLlmDirectPath 只保留 test_agents.py 中没有覆盖的用例：
-    · test_llm_short_response_marks_success_false
-  （test_llm_direct_path_when_route_is_llm_agent 和 test_no_llm_returns_unavailable
-    已在 test_agents.py 的同名 class 中覆盖，此处不重复。）
 """
 import asyncio
 import os
