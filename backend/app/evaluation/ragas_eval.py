@@ -1,5 +1,13 @@
 """基于 Ragas 的 RAG 质量评估（faithfulness / relevancy / precision / recall）。"""
 
+"""
+评估维度（四项核心指标）：
+  - faithfulness          忠实度：回答是否完全基于检索到的上下文
+  - answer_relevancy      回答相关性：回答是否切中用户问题
+  - context_precision     上下文精确率：检索内容与问题的相关比例
+  - context_recall        上下文召回率：答案所需信息是否被检索覆盖
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -10,6 +18,20 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+#  .env 加载（必须在所有 os.getenv 调用之前）
+# ragas_eval.py 作为独立脚本运行时不经过 FastAPI lifespan，
+# app.core.config 不会被自动导入，.env 不会被自动加载。
+# 这里主动加载，确保 DASHSCOPE_API_KEY 等变量在 _build_llm() 中可读取。
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    # 从脚本位置向上查找 .env（backend/.env 或项目根 .env 均可命中）
+    _env_path = Path(__file__).resolve().parents[3] / ".env"
+    if not _env_path.exists():
+        _env_path = Path(__file__).resolve().parents[2] / ".env"
+    _load_dotenv(dotenv_path=_env_path, override=True)
+except ImportError:
+    pass  # python-dotenv 未安装时跳过，依赖系统环境变量
 
 logger = logging.getLogger("medicalai.evaluation")
 
@@ -166,6 +188,12 @@ class RagasEvaluator:
     支持两种 LLM 后端：
       - DashScope / 通义千问（默认，与项目主体一致）
       - OpenAI（通过 OPENAI_API_KEY 环境变量启用）
+
+    参数
+    ----
+    use_openai : bool
+        True 时使用 OpenAI gpt-4o 作为评估裁判；
+        False（默认）时使用 DashScope qwen-max。
     """
 
     def __init__(self, use_openai: bool = False):
@@ -203,36 +231,47 @@ class RagasEvaluator:
         return self._llm
 
     def _build_embeddings(self):
-        """构建 Ragas 评估所用的 Embeddings 模型（本地 HuggingFace 模型）。"""
+        """
+        构建 Ragas 评估所用的 Embeddings 模型。
+
+        优先级（非 OpenAI 模式）：
+          1. 环境变量 EMBEDDING_MODEL 指定的本地路径（与主工程一致，优先使用）
+          2. 降级：sentence-transformers/all-MiniLM-L6-v2（需联网下载）
+        """
         if self._embeddings is not None:
             return self._embeddings
 
-        from langchain_huggingface.embeddings import HuggingFaceEmbeddings
+        if self.use_openai:
+            from langchain_openai import OpenAIEmbeddings
+            self._embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+            logger.info("Ragas 评估 Embeddings：OpenAI text-embedding-3-small")
+        else:
+            from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 
-        # 优先读取本地模型路径，与主工程保持一致
-        local_model = os.getenv("EMBEDDING_MODEL", "").strip()
+            # 优先读取 .env 中的本地模型路径，与主工程保持一致
+            local_model = os.getenv("EMBEDDING_MODEL", "").strip()
 
-        if local_model:
-            model_path = Path(local_model)
-            if model_path.exists():
+            if local_model:
+                model_path = Path(local_model)
+                if model_path.exists():
+                    self._embeddings = HuggingFaceEmbeddings(
+                        model_name=str(model_path),
+                        model_kwargs={"device": "cpu"},
+                        encode_kwargs={"normalize_embeddings": True},
+                    )
+                    logger.info("Ragas 评估 Embeddings：本地模型 %s", model_path.name)
+                else:
+                    logger.warning(
+                        "EMBEDDING_MODEL 路径不存在：%s，降级为 all-MiniLM-L6-v2", local_model
+                    )
+                    local_model = ""
+
+            if not local_model:
                 self._embeddings = HuggingFaceEmbeddings(
-                    model_name=str(model_path),
+                    model_name="sentence-transformers/all-MiniLM-L6-v2",
                     model_kwargs={"device": "cpu"},
-                    encode_kwargs={"normalize_embeddings": True},
                 )
-                logger.info("Ragas 评估 Embeddings：本地模型 %s", model_path.name)
-            else:
-                logger.warning(
-                    "EMBEDDING_MODEL 路径不存在：%s，降级为 all-MiniLM-L6-v2", local_model
-                )
-                local_model = ""
-
-        if not local_model:
-            self._embeddings = HuggingFaceEmbeddings(
-                model_name="sentence-transformers/all-MiniLM-L6-v2",
-                model_kwargs={"device": "cpu"},
-            )
-            logger.info("Ragas 评估 Embeddings：all-MiniLM-L6-v2（降级）")
+                logger.info("Ragas 评估 Embeddings：all-MiniLM-L6-v2（降级）")
 
         return self._embeddings
 
@@ -241,7 +280,14 @@ class RagasEvaluator:
     def build_dataset(
         self, samples: Optional[List[Dict[str, Any]]] = None
     ):
-        """将样本列表转换为 Ragas 所需的 HuggingFace Dataset 格式。"""
+        """
+        将样本列表转换为 Ragas 所需的 HuggingFace Dataset 格式。
+
+        参数
+        ----
+        samples : 列表，每项包含 question / answer / contexts / ground_truth。
+                  默认使用内置 SAMPLE_DATASET。
+        """
         try:
             from datasets import Dataset
         except ImportError:
@@ -266,7 +312,17 @@ class RagasEvaluator:
         export_csv: bool = False,
         output_dir: Optional[str] = None,
     ) -> Dict[str, float]:
-        """执行 Ragas 评估并返回各指标得分。"""
+        """
+        执行 Ragas 评估并返回各指标得分。
+
+        参数:
+        samples    : 自定义评估样本；None 时使用内置样例。
+        export_csv : True 时将结果写入 CSV 文件。
+        output_dir : CSV 输出目录；None 时写入 backend/evaluation_reports/。
+
+        返回:
+        dict，键为指标名称，值为 0~1 之间的浮点数。
+        """
         try:
             from ragas import evaluate
         except ImportError:
@@ -357,6 +413,11 @@ class RagasEvaluator:
         #  提取汇总得分（兼容 ragas v0.1 dict 与 v0.2+ EvaluationResult）
         # ragas v0.2 起 evaluate() 返回 EvaluationResult 对象，没有 .items()，
         # 需通过 ._scores_dict / .scores / to_pandas() 等方式获取数值。
+        # 诊断结论（来自调试日志）：
+        #   - result._scores_dict 存在但为空 {}
+        #   - result.to_pandas() 有数据，float64 列即为指标得分
+        #   - 列名是 user_input / retrieved_contexts / response / reference + 指标名
+        #     不是 question / answer / contexts / ground_truth（旧命名），故需用 dtype 过滤
         scores: Dict[str, float] = {}
         if hasattr(result, "to_pandas"):
             # 最可靠路径：直接从 DataFrame 的数值列取列均值
@@ -393,8 +454,9 @@ class RagasEvaluator:
 
         return scores
 
-  
-    # 历史基线（每次跑完后手动或自动更新）
+    #  私有：报告输出 
+
+    #  历史基线（每次跑完后手动或自动更新）
     # 格式：{"日期": {"faithfulness": x, "answer_relevancy": x, ...}}
     # 用途：与当前得分对比，直观展示 Prompt 调优是否有效
     SCORE_HISTORY: List[Dict[str, Any]] = [
@@ -422,7 +484,12 @@ class RagasEvaluator:
 
     @classmethod
     def _print_report(cls, scores: Dict[str, float]) -> None:
-        """在终端打印格式化的评估报告（指标 + 安全性诊断 + 历史对比）。"""
+        """
+        在终端打印格式化的评估报告，包含：
+          1. 四项 Ragas 指标及进度条
+          2. 安全性维度（幻觉风险、超范围推断评估）
+          3. 与历史基线的 Δ 对比（判断 Prompt 调优效果）
+        """
         label_map = {
             "faithfulness":       "忠实度       (Faithfulness)",
             "answer_relevancy":   "回答相关性   (Answer Relevancy)",
@@ -433,7 +500,7 @@ class RagasEvaluator:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         print("\n" + "=" * 62)
-        print("  Ragas RAG 质量评估报告")
+        print("  MedicalAI — Ragas RAG 质量评估报告")
         print(f"  评估时间：{now_str}")
         print("=" * 62)
 
@@ -558,7 +625,13 @@ class RagasEvaluator:
 #  FastAPI 端点集成（可选） 
 
 def create_eval_router():
-    """创建 FastAPI 评估路由（可选挂载到主应用）。"""
+    """
+    创建 FastAPI 评估路由（可选挂载到主应用）。
+
+    挂载方式（在 main.py 中）：
+        from app.evaluation.ragas_eval import create_eval_router
+        app.include_router(create_eval_router(), prefix="/api/v1")
+    """
     try:
         from fastapi import APIRouter, BackgroundTasks, HTTPException
         from pydantic import BaseModel
@@ -621,7 +694,7 @@ def create_eval_router():
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Ragas RAG 质量评估工具",
+        description="MedicalAI — Ragas RAG 质量评估工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例：
