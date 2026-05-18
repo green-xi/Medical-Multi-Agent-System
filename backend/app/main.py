@@ -1,4 +1,4 @@
-"""FastAPI 应用入口。"""
+"""FastAPI 应用入口：应用初始化、生命周期管理与路由注册。"""
 
 import asyncio
 import os
