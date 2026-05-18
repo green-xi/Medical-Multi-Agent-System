@@ -1,17 +1,5 @@
 """
-LangGraph 状态图定义：五 Agent 精简架构。
-
-路由函数说明：
-  _route_after_memory       有缓存→END，无缓存→query_rewriter
-  _route_after_planner      skip_critic=True（llm_agent路径）→END；
-                            phase="init"→research；
-                            phase="eval" satisfied→critic；否则→research
-  _route_after_critic       通过→END；不通过→research（直接重检索，不经 Planner）
-
-设计原则：
-  - planner_eval.phase 显式标记调用阶段，不依赖 reason 字符串匹配（脆弱）
-  - Critic 失败只写 replan_instruction，不污染 planner_eval（职责隔离）
-  - Critic 重入路径绕过 Planner，replan_count 不被提前消耗
+LangGraph 状态图定义：五 Agent 架构。
 """
 
 from langgraph.graph import END, StateGraph
@@ -22,6 +10,7 @@ from app.agents.planner import PlannerAgent
 from app.agents.research import ResearchAgent
 from app.agents.critic import CriticAgent
 from app.core.state import AgentState
+from app.tools.mcp_client import load_mcp_tools_sync
 
 
 #  路由函数 
@@ -39,8 +28,8 @@ def _route_after_memory(state: AgentState) -> str:
 
 def _route_after_planner(state: AgentState) -> str:
     """
-    Planner 路由，基于显式 phase 字段判断，不依赖 reason 字符串匹配：
-    - skip_critic=True  → llm_agent 路径，直接 END（闲聊/通用问答，无需 Critic）
+    Planner 路由，基于显式 phase 字段判断：
+    - skip_critic=True  → llm_agent 路径，直接 END（闲聊/通用问答，不经 Critic）
     - phase="init"      → 初始规划刚完成，进入 research 执行
     - phase="eval" + satisfied=True  → 结果满意，进入 critic 核查
     - phase="eval" + satisfied=False → 结果不满意，重规划，回到 research
@@ -84,6 +73,9 @@ def _route_after_critic(state: AgentState) -> str:
 
 def create_workflow():
     """构建并编译五 Agent LangGraph 工作流。"""
+    # 初始化 MCP 工具缓存（启动时加载，后续复用）
+    load_mcp_tools_sync()
+
     workflow = StateGraph(AgentState)
 
     #  注册节点 
@@ -116,7 +108,9 @@ def create_workflow():
     # 且 critic_attempt_count 的保护保证 Critic 最多执行 MAX_CRITIC_ATTEMPTS 次。
     workflow.add_edge("research", "planner")
 
-    #  Planner 条件边 
+    #  Planner 条件边
+    # 初始规划（phase="init"）→ research 执行
+    # 结果评估（phase="eval"）→ satisfed→critic / 不满意→research
     workflow.add_conditional_edges(
         "planner",
         _route_after_planner,
