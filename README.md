@@ -109,6 +109,7 @@ backend/
 │   ├── core/             # 配置、工作流、状态定义
 │   │   ├── config.py
 │   │   ├── langgraph_workflow.py
+│   │   ├── logging_config.py
 │   │   └── state.py
 │   ├── db/               # SQLAlchemy 会话管理
 │   ├── memory/           # 短期/长期记忆
@@ -138,19 +139,21 @@ frontend/
 ├── nginx.conf
 ├── .dockerignore
 ├── package.json
+├── postcss.config.js
+├── tailwind.config.js
 └── vite.config.js
 ```
 
 ## 环境变量
 
-| 变量 | 说明 | 必填 |
-|------|------|------|
-| `DASHSCOPE_API_KEY` | 通义千问 LLM API Key | 是 |
-| `TAVILY_API_KEY` | Tavily 联网搜索 Key | 否 |
-| `EMBEDDING_MODEL` | 本地嵌入模型路径 | 否（自动探测） |
-| `RERANKER_MODEL` | 本地 Reranker 路径 | 否（自动探测） |
-| `RERANKER_TOP_K` | 精排后文档数（默认 5） | 否 |
-| `MCP_ENABLED` | 启用 MCP 外部工具（true/false，默认 true） | 否 |
+| 变量 | 说明 |
+|------|------|
+| `DASHSCOPE_API_KEY` | 通义千问 LLM API Key |
+| `TAVILY_API_KEY` | Tavily 联网搜索 Key |
+| `EMBEDDING_MODEL` | 本地嵌入模型路径 | 
+| `RERANKER_MODEL` | 本地 Reranker 路径 | 
+| `RERANKER_TOP_K` | 精排后文档数（默认 5） |
+| `MCP_ENABLED` | 启用 MCP 外部工具（true/false） |
 
 ## 测试
 
