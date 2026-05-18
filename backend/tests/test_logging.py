@@ -1,4 +1,5 @@
-"""Tests for logging — Deep Modular Architecture"""
+"""日志测试 — 深度模块化架构"""
+
 import logging
 import os
 import sys
@@ -9,15 +10,15 @@ from app.core.logging_config import logger, setup_logging  # noqa: E402
 
 
 def test_setup_logging_creates_directory():
-    # This test is now bypassed or updated because setup_logging skips dir creation in tests.
-    # We verify that in test mode, no dir is created even if requested.
+    # 该测试现在被跳过或更新，因为 setup_logging 在测试模式下跳过目录创建。
+    # 我们验证在测试模式下，即使请求也不会创建目录。
     test_log_dir = "test_logs_should_not_exist"
     if os.path.exists(test_log_dir):
         import shutil
         shutil.rmtree(test_log_dir)
 
     setup_logging(log_dir=test_log_dir)
-    # With the new zero-log policy, this directory should NOT be created during tests
+    # 根据新的零日志策略，测试期间不应创建该目录
     assert not os.path.exists(test_log_dir)
 
 
@@ -32,5 +33,5 @@ def test_logger_has_handlers():
 
 
 def test_logger_level():
-    # In pytest env, level is set to DEBUG
+    # 在 pytest 环境中，日志级别被设置为 DEBUG
     assert logger.level == logging.DEBUG
