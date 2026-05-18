@@ -41,6 +41,24 @@ def _keyword_route(question: str) -> RouteDecision:
     has_tool_kw = any(kw in normalized for kw in TOOL_KEYWORDS)
     has_medical_kw = any(kw in normalized for kw in MEDICAL_KEYWORDS)
 
+    # 闲聊短路：无医学词、无工具词、短句 → 直接走 llm_agent
+    # 例："今天天气不错"含"天气"但无医学意图，不应路由到 tool_agent
+    _CHITCHAT_PATTERNS = ["不错", "真棒", "谢谢", "你好", "再见", "你是谁", "介绍一下"]
+    is_short = len(question.strip()) <= 10
+    is_chitchat = (
+        not has_medical_kw
+        and is_short
+        and any(p in normalized for p in _CHITCHAT_PATTERNS)
+    )
+    if is_chitchat:
+        return {
+            "is_medical": False,
+            "tool": "llm_agent",
+            "confidence": 0.62,
+            "reason": "短句闲聊，无医学意图，走通用问答。",
+            "strategy": "keyword_fallback",
+        }
+
     # 同时命中工具和医学关键词时，医学优先
     # 例："今天的温度和湿度，在北京腿疼是因为风湿吗" → 湿度触发工具、腿疼/风湿触发医学
     if has_tool_kw and has_medical_kw:
@@ -226,9 +244,9 @@ def PlannerAgent(state: AgentState) -> AgentState:
         return state
 
     if not is_evaluating:
-         
+        
         # 阶段一：初始规划（制定执行路径）
-         
+        
         question = state["question"].strip()
 
         decision: RouteDecision | None = None
@@ -262,13 +280,13 @@ def PlannerAgent(state: AgentState) -> AgentState:
         )
 
     else:
-         
+        
         # 阶段二：执行结果评估 + 可能的 Replan
-         
+        
         question = state.get("original_question") or state["question"]
         generation = state.get("generation", "")
 
-        #  闲聊短路：llm_agent 问题直接放行 
+        #  闲聊短路：llm_agent 问题直接放行
         # 问候/闲聊类问题不需要"实质性医学信息"，LLM 评估会误判为不满足。
         # 同时标记 skip_critic=True，让 _route_after_planner 直接路由到 END，
         # 跳过 CriticAgent（闲聊回答无需事实核查，节省 20-60 秒）。
@@ -286,8 +304,6 @@ def PlannerAgent(state: AgentState) -> AgentState:
             return state
 
         #  replan_count 来源：只读 Planner 自己写入的计数
-        # Critic 失败后重入时，planner_eval 已被 Planner 在上一轮写为 phase="eval"，
-        # replan_count 保持不变（Critic 失败不消耗 Planner 重规划次数）。
         current_replan_count = state["planner_eval"].get("replan_count", 0)
 
         # 超出重规划上限，强制放行
