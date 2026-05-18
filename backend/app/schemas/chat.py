@@ -1,5 +1,6 @@
 """对话请求与响应 schema。"""
 
+
 from pydantic import BaseModel
 
 
@@ -18,3 +19,4 @@ class ChatResponse(BaseModel):
     query_intent: str = ""           # 意图分类
     rag_think_log: list = []         # RAG 迭代评估日志
     tool_trace: list = []            # 节点执行路径
+    thinking: dict = {}              # 思考过程聚合对象（嵌套结构，供前端/测试访问）
